@@ -1,0 +1,821 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=2">
+<meta name="theme-color" content="#222">
+<meta name="generator" content="Hexo 5.0.2">
+  <link rel="apple-touch-icon" sizes="180x180" href="/images/apple-touch-icon-next.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/images/favicon-32x32-next.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/images/favicon-16x16-next.png">
+  <link rel="mask-icon" href="/images/logo.svg" color="#222">
+
+<link rel="stylesheet" href="/css/main.css">
+
+
+<link rel="stylesheet" href="/lib/font-awesome/css/all.min.css">
+
+<script id="hexo-configurations">
+    var NexT = window.NexT || {};
+    var CONFIG = {"hostname":"wapthen.githu.io","root":"/","scheme":"Gemini","version":"8.0.0-rc.2","exturl":false,"sidebar":{"position":"left","display":"post","padding":18,"offset":12,"onmobile":false},"copycode":{"enable":false,"show_result":false,"style":null},"back2top":{"enable":true,"sidebar":false,"scrollpercent":false},"bookmark":{"enable":false,"color":"#222","save":"auto"},"fancybox":false,"mediumzoom":false,"lazyload":false,"pangu":false,"comments":{"style":"tabs","active":null,"storage":true,"lazyload":false,"nav":null},"algolia":{"hits":{"per_page":10},"labels":{"input_placeholder":"Search for Posts","hits_empty":"We didn't find any results for the search: ${query}","hits_stats":"${hits} results found in ${time} ms"}},"localsearch":{"enable":false,"trigger":"auto","top_n_per_article":1,"unescape":false,"preload":false},"motion":{"enable":true,"async":false,"transition":{"post_block":"fadeIn","post_header":"slideDownIn","post_body":"slideDownIn","coll_header":"slideLeftIn","sidebar":"slideUpIn"}}};
+  </script>
+
+  <meta name="description" content="数据持久化一直是数据库的重头戏，因为这关系到性能，更关系着数据安全。Redis可以通过配置选项作为纯内存缓存使用，也可以开启持久化功能，以满足不同的业务场景需求。持久化必然会与磁盘打交道，相比于软件而言，硬件的演进是很漫长，从之前的机械式硬盘到固态盘，虽说IO性能有很大的提升，但是演进的速度是无法满足产品需求。所以Redis作者在数据持久化这一块做了大量的优化工作。">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Redis数据持久化机制">
+<meta property="og:url" content="https://wapthen.githu.io/2020/06/14/2020/2020-03-12-Redis%E6%95%B0%E6%8D%AE%E6%8C%81%E4%B9%85%E5%8C%96%E6%9C%BA%E5%88%B6/index.html">
+<meta property="og:site_name" content="记录思考">
+<meta property="og:description" content="数据持久化一直是数据库的重头戏，因为这关系到性能，更关系着数据安全。Redis可以通过配置选项作为纯内存缓存使用，也可以开启持久化功能，以满足不同的业务场景需求。持久化必然会与磁盘打交道，相比于软件而言，硬件的演进是很漫长，从之前的机械式硬盘到固态盘，虽说IO性能有很大的提升，但是演进的速度是无法满足产品需求。所以Redis作者在数据持久化这一块做了大量的优化工作。">
+<meta property="og:locale" content="zh_CN">
+<meta property="article:published_time" content="2020-06-14T00:00:00.000Z">
+<meta property="article:modified_time" content="2020-08-12T03:14:45.589Z">
+<meta property="article:author" content="wapthen">
+<meta property="article:tag" content="Redis">
+<meta property="article:tag" content="C">
+<meta name="twitter:card" content="summary">
+
+<link rel="canonical" href="https://wapthen.githu.io/2020/06/14/2020/2020-03-12-Redis%E6%95%B0%E6%8D%AE%E6%8C%81%E4%B9%85%E5%8C%96%E6%9C%BA%E5%88%B6/">
+
+
+<script id="page-configurations">
+  // https://hexo.io/docs/variables.html
+  CONFIG.page = {
+    sidebar: "",
+    isHome : false,
+    isPost : true,
+    lang   : 'zh-CN'
+  };
+</script>
+
+  <title>Redis数据持久化机制 | 记录思考</title>
+  
+
+
+
+
+
+
+  <noscript>
+  <style>
+  .use-motion .brand,
+  .use-motion .menu-item,
+  .sidebar-inner,
+  .use-motion .post-block,
+  .use-motion .pagination,
+  .use-motion .comments,
+  .use-motion .post-header,
+  .use-motion .post-body,
+  .use-motion .collection-header { opacity: initial; }
+
+  .use-motion .site-title,
+  .use-motion .site-subtitle {
+    opacity: initial;
+    top: initial;
+  }
+
+  .use-motion .logo-line-before i { left: initial; }
+  .use-motion .logo-line-after i { right: initial; }
+  </style>
+</noscript>
+
+</head>
+
+<body itemscope itemtype="http://schema.org/WebPage">
+  <div class="container use-motion">
+    <div class="headband"></div>
+
+    <header class="header" itemscope itemtype="http://schema.org/WPHeader">
+      <div class="header-inner"><div class="site-brand-container">
+  <div class="site-nav-toggle">
+    <div class="toggle" aria-label="切换导航栏">
+        <span class="toggle-line toggle-line-first"></span>
+        <span class="toggle-line toggle-line-middle"></span>
+        <span class="toggle-line toggle-line-last"></span>
+    </div>
+  </div>
+
+  <div class="site-meta">
+
+    <a href="/" class="brand" rel="start">
+      <span class="logo-line-before"><i></i></span>
+      <h1 class="site-title">记录思考</h1>
+      <span class="logo-line-after"><i></i></span>
+    </a>
+  </div>
+
+  <div class="site-nav-right">
+    <div class="toggle popup-trigger">
+    </div>
+  </div>
+</div>
+
+
+
+<nav class="site-nav">
+  <ul id="menu" class="main-menu menu">
+        <li class="menu-item menu-item-home">
+
+    <a href="/" rel="section"><i class="fa fa-home fa-fw"></i>首页</a>
+
+  </li>
+        <li class="menu-item menu-item-tags">
+
+    <a href="/tags/" rel="section"><i class="fa fa-tags fa-fw"></i>标签</a>
+
+  </li>
+  </ul>
+</nav>
+
+
+
+
+</div>
+    </header>
+
+    
+  <div class="back-to-top">
+    <i class="fa fa-arrow-up"></i>
+    <span>0%</span>
+  </div>
+
+
+    <main class="main">
+      <div class="main-inner">
+        <div class="content-wrap">
+          
+
+          <div class="content post posts-expand">
+            
+
+    
+  
+  
+  <article itemscope itemtype="http://schema.org/Article" class="post-block" lang="zh-CN">
+    <link itemprop="mainEntityOfPage" href="https://wapthen.githu.io/2020/06/14/2020/2020-03-12-Redis%E6%95%B0%E6%8D%AE%E6%8C%81%E4%B9%85%E5%8C%96%E6%9C%BA%E5%88%B6/">
+
+    <span hidden itemprop="author" itemscope itemtype="http://schema.org/Person">
+      <meta itemprop="image" content="/images/avatar.gif">
+      <meta itemprop="name" content="wapthen">
+      <meta itemprop="description" content="">
+    </span>
+
+    <span hidden itemprop="publisher" itemscope itemtype="http://schema.org/Organization">
+      <meta itemprop="name" content="记录思考">
+    </span>
+      <header class="post-header">
+        <h1 class="post-title" itemprop="name headline">
+          Redis数据持久化机制
+        </h1>
+
+        <div class="post-meta">
+            <span class="post-meta-item">
+              <span class="post-meta-item-icon">
+                <i class="far fa-calendar"></i>
+              </span>
+              <span class="post-meta-item-text">发表于</span>
+
+              <time title="创建时间：2020-06-14 08:00:00" itemprop="dateCreated datePublished" datetime="2020-06-14T08:00:00+08:00">2020-06-14</time>
+            </span>
+              <span class="post-meta-item">
+                <span class="post-meta-item-icon">
+                  <i class="far fa-calendar-check"></i>
+                </span>
+                <span class="post-meta-item-text">更新于</span>
+                <time title="修改时间：2020-08-12 11:14:45" itemprop="dateModified" datetime="2020-08-12T11:14:45+08:00">2020-08-12</time>
+              </span>
+
+          
+
+        </div>
+      </header>
+
+    
+    
+    
+    <div class="post-body" itemprop="articleBody">
+
+      
+        <p>数据持久化一直是数据库的重头戏，因为这关系到性能，更关系着数据安全。Redis可以通过配置选项作为纯内存缓存使用，也可以开启持久化功能，以满足不同的业务场景需求。<br>持久化必然会与磁盘打交道，相比于软件而言，硬件的演进是很漫长，从之前的机械式硬盘到固态盘，虽说IO性能有很大的提升，但是演进的速度是无法满足产品需求。所以Redis作者在数据持久化这一块做了大量的优化工作。</p>
+<a id="more"></a>
+
+<h2 id="1-基础技术介绍"><a href="#1-基础技术介绍" class="headerlink" title="1. 基础技术介绍"></a>1. 基础技术介绍</h2><p>类UNIX系统下，日常与文件操作相关的API大致分为两类：文件IO（File I/O）与标准IO库（Standard I/O Library）。</p>
+<h3 id="1-1-文件IO"><a href="#1-1-文件IO" class="headerlink" title="1.1 文件IO"></a>1.1 文件IO</h3><p>文件IO是一种<code>无缓冲（unbuffered）</code>I/O，这个<code>无缓冲</code>的含义是相对于标准IO库而言。文件IO的API是直接调用内核里的系统函数，在API内部未引入缓冲区的设计。注意内核系统函数内部的缓冲区是内核层面的，与此处的<code>无缓冲</code>概念并无任何关联。</p>
+<p>文件IO的使用特点是其API的操作对象是一个int型文件句柄，例如：<code>open()</code>、<code>read()</code>、<code>write()</code>、 <code>close()</code>、<code>lseek()</code> 等。</p>
+<p>在文件IO范畴下，标准输入文件句柄0由<code>STDIN_FILENO</code>宏常量指代，标准输出文件句柄1由<code>STDOUT_FILENO</code>宏常量指代，标准错误文件句柄2由<code>STDERR_FILENO</code>宏常量指代。</p>
+<h3 id="1-2-标准IO库"><a href="#1-2-标准IO库" class="headerlink" title="1.2 标准IO库"></a>1.2 标准IO库</h3><p>标准IO库是由ISO C制定的标准库，在类UNIX系统已得到广泛的支持，是对文件IO的封装，内部引入缓冲区设计用于适配不同的内核文件块，以达到较优的性能，并对外提供编程友好的API。与文件IO相比，标准IO库是一种<code>缓冲（buffered）</code>I/O。</p>
+<p>标准IO库的使用特点是围绕着一个<code>FILE *</code>结构体展开，例如：<code>fopen()</code>、<code>fgets()</code>、<code>fputs()</code>、<code>fread()</code>、<code>fwrite()</code>、<code>fclose()</code>等。</p>
+<p>在标准IO库范畴下，标准输入<code>FILE *</code>由<code>stdin</code>宏常量指代，标准输出<code>FILE *</code>由<code>stdout</code>宏常量指代，标准错误<code>FILE *</code>由<code>stderr</code>宏常量指代。</p>
+<p>在标准IO库引入了缓冲区设计的同时，还提供了是否开启缓冲区的API。目前支持三种缓冲模式：</p>
+<ol>
+<li>Fully Buffered全缓冲</li>
+<li>Line Buffered行缓冲</li>
+<li>Unbuffered无缓冲</li>
+</ol>
+<p>通常情况下，<code>stderr</code>为无缓冲模式；当<code>stdin</code>与<code>stdout</code>跟终端相连时为行缓冲模式，其他情况则为全缓冲。</p>
+<hr>
+<h2 id="2-本文术语说明"><a href="#2-本文术语说明" class="headerlink" title="2. 本文术语说明"></a>2. 本文术语说明</h2><ul>
+<li><p>写盘</p>
+<p>调用<code>write()</code>，将数据由用户进程空间提交到内核缓冲区之后立刻返回，缓冲区里的数据等待内核稍后异步将数据真正的保存到磁盘上，这个过程就是延迟写（delayed write）。这个缓冲区的设计初衷是类UNIX系统内核提升文件系统的读写性能。</p>
+<p>这里稍微展开介绍一下<code>write()</code>在不同场景下的最终效果<span style="color:red;">[2]</span>。</p>
+<ul>
+<li><p>场景1 进程在<code>write()</code>成功返回后，进程崩溃或者被杀掉。</p>
+<p>已<code>write()</code>的数据不会丢失。因为这些数据已经在内核缓冲区里，进程退出(无论是正常exit还是异常中止)时，内核都会主动关闭进程已打开的文件句柄，通过延迟写机制后续将数据真正保存到磁盘上。</p>
+</li>
+<li><p>进程在<code>write()</code>成功返回后，服务器断电。</p>
+<p>已<code>write()</code>的数据是否真正保存到磁盘结果未知。因为断电时，无法确保内核将内核缓冲区的数据安全的保存到磁盘上。</p>
+</li>
+</ul>
+</li>
+<li><p>刷盘</p>
+<p>调用<code>fdatasync()</code>，用户层面主动通知内核将指定文件的缓存队列里的数据保存到磁盘上，数据保存完毕后才返回。此函数是阻塞式，可以确保数据真正保存到磁盘上。</p>
+</li>
+<li><p>落盘</p>
+<p>一个概括性术语，指代写数据到磁盘的整个过程，是<code>写盘</code>与<code>刷盘</code>的总称。</p>
+</li>
+</ul>
+<hr>
+<h2 id="3-RDB"><a href="#3-RDB" class="headerlink" title="3. RDB"></a>3. RDB</h2><p>RDB猜测是<code>Redis DataBase</code>的缩写，是一种binary文件格式，记录Redis全量内存快照数据，供Redis数据持久化使用。</p>
+<h3 id="3-1-RDB格式"><a href="#3-1-RDB格式" class="headerlink" title="3.1 RDB格式"></a>3.1 RDB格式</h3><p>根据Redis所支持的自有数据结构，制定的一套二进制编码格式，可以将内存里的全量数据有组织的保存到文件里。</p>
+<p>这套编码格式大致分为3类</p>
+<ul>
+<li><p>常量编码</p>
+<p>主要包含自有数据类别，例如：list、hash、set、zset等。同时还定义了一组特殊的标记编码，用于记录内存里特别的数据，例如：定时失效标记、DB库id、LRU idle、字典里已用的桶个数、结束标记等。</p>
+</li>
+<li><p>字符编码</p>
+<p>字符编码是用于记录内存里的字符型数据，包括text字符以及binanry字符，一般而言，这类数据占Redis内存数据的大多数。</p>
+<p>整体格式为：</p>
+<table>
+<thead>
+<tr>
+<th align="center">length字节数</th>
+<th align="center">data字符数据</th>
+</tr>
+</thead>
+</table>
+<p>为了尽可能高效存储，这套字符编码对于<code>length字节数</code>细化了一组编码，以根据不同范围数值使用尽可能少的字节数。</p>
+<p>另外，对于<code>data字符数据</code>Redis作者也有针对性的进行了空间优化的设计，采用3种策略，每次都尽可能使用优先级高的策略记录数据。</p>
+<table>
+<thead>
+<tr>
+<th align="center">优先级</th>
+<th align="center">保存策略</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="center">高</td>
+<td align="center">尝试将该字符型数据直接转为整型数据进行整型编码存储</td>
+</tr>
+<tr>
+<td align="center">中</td>
+<td align="center">使用LZF压缩数据，至少需要节约4字节空间才认为ok</td>
+</tr>
+<tr>
+<td align="center">低</td>
+<td align="center">原始格式存储</td>
+</tr>
+</tbody></table>
+<p>这里解释一下<code>高优先级</code>策略的优势，如果要保存的字符型数据内容为”100000”，字符串长度为6，至少需要1个字节记录length，所以如果直接采用字符型编码需要7个字节。而该数据可以转为整型100000，自身占用4字节，1个字节记录encode编码，使用整型编码需要5个字节，比字符型编码占用更少的空间。</p>
+</li>
+<li><p>整型编码</p>
+<p>顾名思义，只存储整型类别的数据，整体格式为：</p>
+<table>
+<thead>
+<tr>
+<th align="center">encode编码</th>
+<th align="center">data整型数据</th>
+</tr>
+</thead>
+</table>
+<p>当前整型编码只保存char、short、int型，至于64bit的long型则会走字符型编码流程进行存储。</p>
+</li>
+</ul>
+<h3 id="3-2-RDB优点"><a href="#3-2-RDB优点" class="headerlink" title="3.2 RDB优点"></a>3.2 RDB优点</h3><ul>
+<li>RDB是Redis内存全量数据的快照数据，另外其存储格式也很紧密，特别适合做历史数据备份归档使用。</li>
+<li>RDB文件很适合做灾备重建使用，单个二进制文件，且相比较AOF格式加载速度很快。</li>
+<li>在RDB文件生成过程中，主进程除了fork创建子进程之外，全力响应用户的请求操作，性能发挥最大化。</li>
+</ul>
+<h3 id="3-3-RDB不足"><a href="#3-3-RDB不足" class="headerlink" title="3.3 RDB不足"></a>3.3 RDB不足</h3><ul>
+<li>数据安全性较差。因为RDB是全量快照数据，所以有一定的间隔周期，而在这些间隔时间如果进程异常，则会丢失该周期内的所有新数据。</li>
+<li>内存消耗大。RDB文件是由主进程fork出来的子进程专职处理，尽管操作系统有cow技术以减少内存消耗，但是如果内存数据量巨大，子进程生成RDB文件必然持续较长时间，而此时如果主进程承接用户的新的写命令过多，必然导致内存短时膨胀，引起服务器内存紧张。</li>
+</ul>
+<h3 id="3-4-RDB配置参数"><a href="#3-4-RDB配置参数" class="headerlink" title="3.4 RDB配置参数"></a>3.4 RDB配置参数</h3><figure class="highlight shell"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br></pre></td><td class="code"><pre><span class="line"><span class="meta">#</span><span class="bash"> 在子进程写RDB文件时，控制是否开启周期性主动刷盘。</span></span><br><span class="line"><span class="meta">#</span><span class="bash"> yes开启时，每写盘32MB数据之后会进行一次刷盘。</span></span><br><span class="line"><span class="meta">#</span><span class="bash"> no关闭时，整个保存RDB文件期间均不会主动刷盘，完全交由操作系统默认处理。</span></span><br><span class="line"><span class="meta">#</span><span class="bash"> 建议开启，否则在保存RDB文件结束时可能会导致大的延迟。</span></span><br><span class="line">rdb-save-incremental-fsync yes</span><br><span class="line"></span><br><span class="line"><span class="meta">#</span><span class="bash"> RDB文件自动保存的触发条件</span></span><br><span class="line"><span class="meta">#</span><span class="bash"> 参数数据为： change_number second_period，表示在`second_period`有`change_number`以上变化时就自动开启RDB文件保存。</span></span><br><span class="line"><span class="meta">#</span><span class="bash"> 注意 参数中的计时周期`second_period`是以上一次成功完成rdb为准。</span></span><br><span class="line"><span class="meta">#</span><span class="bash"> 在上一次RDB保存成功的情况下,如下触发条件`任意一个`均可触发新的rdb保存。</span></span><br><span class="line"><span class="meta">#</span><span class="bash"> 在上一次RDB保存失败情况下,还需满足间隔5秒以上,才能考虑如下触发条件。</span></span><br><span class="line"><span class="meta">#</span><span class="bash"> 如果要关闭RDB持久化，可以设置 save <span class="string">&quot;&quot;</span></span></span><br><span class="line">save 900 1</span><br><span class="line">save 300 10</span><br><span class="line">save 60 1000</span><br><span class="line"></span><br><span class="line"><span class="meta">#</span><span class="bash"> 在RDB文件生成的过程中如果发生错误,则Redis主进程是否执行用户的写请求</span></span><br><span class="line">stop-writes-on-bgsave-error yes</span><br><span class="line"></span><br><span class="line"><span class="meta">#</span><span class="bash"> 是否开启RDB字符型数据压缩，以时间换空间，RDB文件占用更少空间</span></span><br><span class="line">rdbcompression yes</span><br><span class="line"></span><br><span class="line"><span class="meta">#</span><span class="bash"> 是否开启RDB文件校验机制</span></span><br><span class="line"><span class="meta">#</span><span class="bash"> 在RDB文件末尾的结束符号后，会有固定的8字节空间存储校验码，如果关闭校验机制，则校验码以0保存且加载时不予校验。</span></span><br><span class="line">rdbchecksum yes</span><br><span class="line"></span><br><span class="line"><span class="meta">#</span><span class="bash"> RDB文件名称</span></span><br><span class="line">dbfilename dump.rdb</span><br><span class="line"></span><br></pre></td></tr></table></figure>
+<h3 id="3-5-RDB持久化过程"><a href="#3-5-RDB持久化过程" class="headerlink" title="3.5 RDB持久化过程"></a>3.5 RDB持久化过程</h3><p>相比于AOF的持久化，RDB持久化过程较为简单，因为RDB文件是快照数据，只需要完整记录某一时刻Redis内存全量数据即可，而在该时刻之后的内存数据更新，本次RDB文件不予包含，留待下次记录。这个机制可以充分利用类UNIX系统的父子进程共享内存原理，而且任意一方对内存的修改，均不会影响对方内存既有数据，即COW写时拷贝机制。</p>
+<p>RDB持久化有两种触发方式，站在Redis进程的视角来看分为：被动触发与主动触发。</p>
+<ul>
+<li><p>被动触发<br>通过外部client发送命令，触发进行RDB文件生成。</p>
+<ul>
+<li><p><code>save</code></p>
+<p>通知Redis server开启阻塞式生成RDB文件工作，由执行该命令的主进程将内存数据全量保存到RDB文件中，在此过程中阻塞其他所有client的命令执行以及Redis自身周期性任务，直至RDB文件生成完毕。</p>
+<p>一般在各类环境中均禁止使用此命令。</p>
+</li>
+<li><p><code>bgsave</code></p>
+<p>通知Redis server开启后台生成RDB文件工作，执行该命令的主进程在<code>fork()</code>一个子进程后，会继续处理其他client命令以及周期性任务，而子进程在后台将<code>fork()</code>发生这一时刻内存里的数据全量保存到文件里。</p>
+</li>
+</ul>
+</li>
+<li><p>主动触发</p>
+<p>由Redis server自身根据配置文件中的<code>save</code>参数周期性的自动开启后台生成RDB文件工作，执行逻辑类似于<code>bgsave</code>命令。</p>
+</li>
+</ul>
+<p>这里我们只以<code>主动触发</code>引起的RDB文件生成过程为对象，介绍一下大致流程以及部分技术细节。</p>
+<p>当Redis主进程通过周期性任务判定某一时间段内的变化次数已经超过配置的修改次数时，立即开启后台保存RDB工作，集群里的主备节点均会执行本逻辑。</p>
+<p>这里稍微展开解释一下“某一时间段内的变化次数”是如何计算的。涉及到如下相关全局变量:</p>
+<ol>
+<li><code>server.dirty</code>  记录所有db库里累积变化次数；</li>
+<li><code>server.lastsave</code> 记录上一次RDB文件成功生成的秒级时间戳；</li>
+<li><code>server.dirty_before_bgsave</code> 在父子进程分叉执行之前备份<code>server.dirty</code>字段数值；</li>
+<li><code>server.lastbgsave_try</code> 记录最新一次执行后台保存RDB文件的任务开启时间戳；</li>
+<li><code>server.lastbgsave_status</code> 记录最新一次执行后台保存RDB文件的最终结果是正常or异常。</li>
+</ol>
+<p>我们知道后台保存RDB文件的工作是由主进程<code>fork()</code>出来的子进程专职处理的，而主进程在<code>fork()</code>之后立即处理其他周期任务以及执行其他client的命令。其实此时主进程并不能将<code>server.dirty</code>归0以备重新计数，因为此时的子进程刚刚开始保存RDB文件，这个过程可能成功也可能异常终止，主进程的<code>server.dirty</code>提早归0无法应对子进程异常终止的场景。为此，引入了<code>server.dirty_before_bgsave</code>字段，此字段的作用就是在父子进程分叉执行之前，备份当时的<code>server.dirty</code>数值。同时Redis作者采用了一个非常灵活的方式解决何时重新计数的问题，在设置备份字段<code>server.dirty_before_bgsave</code>之后，主进程继续正常累积<code>server.dirty</code>数值，只有在主进程收到子进程正常结束RDB保存工作的信号通知时才会从<code>server.dirty</code>数值里刨除之前刚刚处理完毕的变化次数即<code>server.dirty_before_bgsave</code>数值，这样就避免了重复计数。而如果子进程保存失败，主进程对<code>server.dirty</code>不做任何刨除操作，从而确保了计数的准确性。<code>server.lastbgsave_try</code>与<code>server.lastbgsave_status</code>是为了应对子进程保存失败的场景制定的特别策略：最近一次保存失败的5秒内不允许开启新的后台RDB保存任务，给服务器<code>喘息</code>机会，避免陷入高频<code>出错-重执行</code>的低效循环。</p>
+<p>RDB文件完结时子进程会通知父进程已经保存完毕，父子进程采用的通信方式有两种：</p>
+<ol>
+<li><p><code>pipe()</code></p>
+<p> 父进程在创建子进程之前，会创建一个无名管道<code>server.child_info_pipe</code>，子进程在完结时会将自身一些信息通过该管道发送给父进程。这里面会包含哪些信息呢？我们知道RDB文件的生成工作是由<code>fork()</code>出来子进程进行，COW机制会使父子进程共享一份“读内存”，后续任何一方对该内存页的“写操作”会导致内核为此拷贝一份供修改，理论上在RDB文件生成的这个阶段，父子进程应该尽可能少的修改内存数据，以减少内存页拷贝。那么这期间涉及<code>COW</code>的内存量就是比较关键信息，也就是子进程通过管道发送给父进程的运行信息。<code>COW</code>的内存量是子进程读取<code>/proc/self/smaps</code>文件，获取其中的Private_Dirty字段的数值<span style="color:red;">[3]</span>。</p>
+<p> 这里同样也涉及到另一个潜在问题，RDB子进程向管道<code>write()</code>数据后自身立即<code>exit()</code>，父进程还未从管道中<code>read()</code>，这时处在管道中的待读数据会发生什么呢？</p>
+<blockquote>
+<p>If a process attempts to read from an empty pipe, then read(2) will block until data is available.  If a process attempts to write to a full pipe (see below), then write(2) blocks until sufficient data has been read from the pipe to allow the write to complete.<br>Nonblocking I/O is possible by using the fcntl(2) F_SETFL operation to enable the O_NONBLOCK open file status flag.</p>
+<p>The communication channel provided by a pipe is a byte stream: there is no concept of message boundaries.<br>If all file descriptors referring to the write end of a pipe have been closed, then an attempt to read(2) from the pipe will see end-of-file (read(2) will return 0).<br>If all file descriptors referring to the read end of a pipe have been closed, then a write(2) will cause a SIGPIPE signal to be generated for the calling process.<br>If the calling process is ignoring this signal, then write(2) fails with the error EPIPE.</p>
+<p>An application that uses pipe(2) and fork(2) should use suitable close(2) calls to close unnecessary duplicate file descriptors; this ensures that end-of-file and SIGPIPE/EPIPE are delivered when appropriate<span style="color:red;">[4]</span>.</p>
+</blockquote>
+<blockquote>
+<p>If we read from a pipe whose write end has been closed, read returns 0 to indicate an end of file after all the data has been read. (Technically, we should say that this end of file is not generated until there are no more writers for the pipe.<br>It’s possible to duplicate a pipe descriptor so that multiple processes have the pipe open for writing. Normally, however, there is a single reader and a single writer for a pipe. When we get to FIFOs in the next section, we’ll see that often there are multiple writers for a single FIFO.)<span style="color:red;">[5]</span></p>
+</blockquote>
+<blockquote>
+<p>This should make it obvious why pipe() creates two file descriptors. The writer writes all the data it needs into the write fd and closes the fd. This also triggers an EOF to be sent. The reader would usually keep reading data until it encounters the EOF and closes its end.<br>In this scenario, there’s a period of time where the write fd is closed but data is still buffered in the pipe, waiting to be read out by the reader<span style="color:red;">[6]</span>. </p>
+</blockquote>
+<p> 上述3处解释可以确认：</p>
+<ol>
+<li><p>只有当父子进程关闭各自的“pipe写侧fd[1]”时才会触发EOF标记；</p>
+</li>
+<li><p>阻塞模式下，当管道中无数据时，“pipe读侧fd[0]”的读取会阻塞当前调用进程，直至有数据or碰到EOF；</p>
+</li>
+<li><p>非阻塞模式下，无论什么场景下均不会阻塞“pipe读侧fd[0]”的读取进程。</p>
+<p>在父子进程均没有<code>close</code>各自无用的pipe文件句柄的情况下，子进程先<code>exit()</code>，那么处于管道中待读取的数据依旧有效，父进程依旧可以<code>read()</code>。</p>
+<p>当父进程关闭“写侧fd[1]”且子进程关闭“读侧fd[0]”，而管道中还有未读取的数据时子进程已经<code>exit()</code>，父进程是否能从管道中读到这些数据呢？按照《APUE》的解释，是可以读到这些数据，并且末尾会看到EOF。</p>
+<p>Redis作者目前采用的如下方式确保管道中的数据不丢失：</p>
+</li>
+<li><p>父子进程均没有关闭各自无用的pipe句柄，即子进程退出时不会有EOF；</p>
+</li>
+<li><p>将<code>读侧</code>设置为Non-Block，确保当管道中无数据时不会阻塞<code>读进程</code>；</p>
+</li>
+<li><p>不以EOF标记作为结束依据，通信数据以定长结构体封装，读取成功的依据只判断读到的数据长度是否为定长。</p>
+</li>
+</ol>
+</li>
+<li><p><code>wait3()</code></p>
+<p>父进程周期性调用<code>wait3()</code>尝试获得子进程的退出状态，在避免僵尸子进程一直占用资源的同时，也可以由父进程处理一些RDB收尾工作，例如：server.dirty中对server.dirty_before_bgsave的刨除，RDB状态字段的回置等。因为<code>wait3()</code>是由父进程周期性调用，为避免阻塞式等待子进程完结，所以代码里使用了<code>WNOHANG</code>选项。</p>
+</li>
+</ol>
+<h3 id="3-6-RDB的write写盘与fdatasync刷盘逻辑"><a href="#3-6-RDB的write写盘与fdatasync刷盘逻辑" class="headerlink" title="3.6 RDB的write写盘与fdatasync刷盘逻辑"></a>3.6 RDB的<code>write</code>写盘与<code>fdatasync</code>刷盘逻辑</h3><p>RDB文件是快照数据，不需要实时保存用户的新数据，并且持久化工作是由单独子进程专职处理，所以写盘与刷盘操作逻辑较为简单。在该方面用户可以调整的配置参数只有<code>rdb-save-incremental-fsync</code>。<code>yes</code>表示子进程会每写盘32MB数据之后主动进行一次刷盘动作。<code>no</code>表示子进程只会在<code>close()</code>文件之前做一次主动刷盘，除此之外再无主动刷盘，全部由操作系统来处理刷盘逻辑。建议设置为<code>yes</code>，采用渐进式的主动刷盘，避免在最终刷盘可能引起较大的延时。</p>
+<hr>
+<h2 id="4-AOF"><a href="#4-AOF" class="headerlink" title="4. AOF"></a>4. AOF</h2><p>AOF是<code>Append Only File</code>的缩写，是一种text文件格式。该格式文件记录的是原始操作命令，加载时重放文件内容以重建内存全量数据。</p>
+<h3 id="4-1-AOF格式"><a href="#4-1-AOF格式" class="headerlink" title="4.1 AOF格式"></a>4.1 AOF格式</h3><p>text格式，可实时记录用户原始的RESP格式<span style="color:red;">[7]</span>的操作命令。</p>
+<h3 id="4-2-AOF优点"><a href="#4-2-AOF优点" class="headerlink" title="4.2 AOF优点"></a>4.2 AOF优点</h3><ul>
+<li>因AOF是实时记录用户命令，数据持久化更加健壮，更可以根据业务场景倾向于高性能还是数据安全，来针对性的设置不同的刷盘策略。</li>
+<li>AOF文件只追加数据并不涉及过往命令的修改，所以io性能是符合要求。如遇断电等极端异常，“数据半写”情况也仅涉及最后一条命令，<code>redis-check-aof</code>工具可进行移除修复。</li>
+<li>AOF文件以文本方式记录用户的写命令，在某种程度上相当于操作日志，运维操作更加便捷。</li>
+</ul>
+<h3 id="4-3-AOF不足"><a href="#4-3-AOF不足" class="headerlink" title="4.3 AOF不足"></a>4.3 AOF不足</h3><ul>
+<li>相比于RDB，存储同量数据情况下AOF文件的磁盘空间消耗更大。</li>
+<li>AOF文件大小会随着操作频率逐日变大，而过大的AOF文件又会降低Redis重启时的回放效率。不过Redis支持自动Rewrite-AOF机制，使用RESP命令记录内存里的数据，同时旧的AOF文件也并行记录用户的新数据，保证在此期间不丢数据。</li>
+<li>AOF的性能受刷盘策略有很大影响，默认策略是“每秒刷盘”性能较高，“不主动刷盘”的策略下保存性能与RDB格式相当，“每次刷盘”策略性能较差，却是最少可能丢数据。</li>
+</ul>
+<h3 id="4-4-AOF配置参数"><a href="#4-4-AOF配置参数" class="headerlink" title="4.4 AOF配置参数"></a>4.4 AOF配置参数</h3><figure class="highlight shell"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br></pre></td><td class="code"><pre><span class="line"><span class="meta">#</span><span class="bash"> 是否开启AOF持久化数据功能</span></span><br><span class="line"><span class="meta">#</span><span class="bash"> 注意：即使关闭AOF持久化功能，用户可以使用`bgrewriteaof`命令触发Redis server进行一次AOF文件落地。</span></span><br><span class="line">appendonly no</span><br><span class="line"></span><br><span class="line"><span class="meta">#</span><span class="bash"> AOF文件名称</span></span><br><span class="line">appendfilename &quot;appendonly.aof&quot;</span><br><span class="line"></span><br><span class="line"><span class="meta">#</span><span class="bash"> AOF刷盘策略，默认策略是<span class="string">&quot;everysec&quot;</span>每秒刷盘。同时也支持<span class="string">&quot;always&quot;</span>每次刷盘；<span class="string">&quot;no&quot;</span>不主动刷盘。</span></span><br><span class="line">appendfsync everysec</span><br><span class="line"></span><br><span class="line"><span class="meta">#</span><span class="bash"> 在后台子进程正在进行写RDB or Rewrite-AOF期间，无论AOF刷盘策略配置成everysec还是always，是否暂停主进程里的AOF文件主动刷盘。</span></span><br><span class="line">no-appendfsync-on-rewrite no</span><br><span class="line"></span><br><span class="line"><span class="meta">#</span><span class="bash"> 自动触发Rewrite-AOF的阈值：当前AOF文件的大小对比最近一次Rewrite-AOF文件大小的百分比</span></span><br><span class="line">auto-aof-rewrite-percentage 100</span><br><span class="line"><span class="meta">#</span><span class="bash"> 自动触发Rewrite-AOF的阈值：自动进行Rewrite-AOF的最小AOF文件大小，以避免AOF文件很小时频繁进行Rewrite-AOF。</span></span><br><span class="line">auto-aof-rewrite-min-size 64m</span><br><span class="line"></span><br><span class="line"><span class="meta">#</span><span class="bash"> 当Redis基于AOF文件重启时发现文件中最后一条命令不完整时，进程是自动忽略该条命令[yes] 还是 中止运行[no]</span></span><br><span class="line"><span class="meta">#</span><span class="bash"> 注意：如果发现该不完整命令并不是文件中最后一条时，进程中止运行。即本配置参数只对最后一条命令有效。</span></span><br><span class="line">aof-load-truncated yes</span><br><span class="line"></span><br><span class="line"><span class="meta">#</span><span class="bash"> 在子进程Rewrite-AOF时，控制是否开启周期性主动刷盘。</span></span><br><span class="line"><span class="meta">#</span><span class="bash"> yes开启时，每写盘32MB数据之后会进行一次刷盘。</span></span><br><span class="line"><span class="meta">#</span><span class="bash"> no关闭时，整个Rewrite期间均不会主动刷盘，完全交由操作系统默认处理。</span></span><br><span class="line"><span class="meta">#</span><span class="bash"> 建议开启，否则在写文件结束时可能会导致大的延迟。</span></span><br><span class="line">aof-rewrite-incremental-fsync yes</span><br></pre></td></tr></table></figure>
+
+<h3 id="4-5-AOF持久化过程"><a href="#4-5-AOF持久化过程" class="headerlink" title="4.5 AOF持久化过程"></a>4.5 AOF持久化过程</h3><p>AOF格式是实时记录用户执行的命令，是在哪一个环节完成持久化的呢？这里我们需要先看一下Redis核心的运行机制。Redis会将所有关注的套接字注册到该事件分配器，之后再执行定时任务，这两个组成了Redis核心。在进入核心之前，会执行一个<code>beforeSleep()</code>前置函数做一些整理工作。</p>
+<p>当有套接字可读/可写时，事件分配器回调对应读/写函数，一般的执行顺序是：先读后写。</p>
+<ul>
+<li><p>读工作</p>
+<p>从套接字无阻塞式<code>read()</code>出数据，如果已经取到完整的命令数据，则立即解析并执行命令。如果执行成功且对db库进行了改动，Redis会将原始命令数据追加到AOF的缓冲区<code>server.aof_buf</code>里，之后构造响应数据并填充到client的“回复缓冲区”里。</p>
+</li>
+<li><p>写工作</p>
+<p>依据套接字对应的client“回复缓冲区”的数据，无阻塞式的发送到网络中。</p>
+</li>
+</ul>
+<p>这样就完成了一个命令的收发周期。而此时命令数据还存在AOF缓冲区<code>server.aof_buf</code>里，需要尽快完成持久化。Redis将AOF的缓存持久化工作放在定时任务以及进入核心之前的<code>beforeSleep()</code>里。这里就有一个潜在的问题：在本轮命令数据持久化之前，用户已经提前拿到该命令的响应结果，如果此时进程异常退出，则这些未持久化的数据就彻底丢失了。Redis对于此情况暂未处理。</p>
+<h3 id="4-6-AOF的write写盘与fdatasync刷盘逻辑"><a href="#4-6-AOF的write写盘与fdatasync刷盘逻辑" class="headerlink" title="4.6 AOF的write写盘与fdatasync刷盘逻辑"></a>4.6 AOF的<code>write</code>写盘与<code>fdatasync</code>刷盘逻辑</h3><p>Redis需要将AOF缓冲区里的命令数据写入磁盘AOF文件，那么这里一定会涉及到<code>写盘</code>与<code>刷盘</code>逻辑，尤其是AOF写入动作是发生在主进程的定时任务以及进入核心之前的’beforeSleep()’前置函数，这两处均需要以极短的时间完成，而频繁的<code>刷盘</code>必然造成延迟。这里就需要对“性能”与“数据持久化”两者进行取舍，Redis将“抉择”通过配置参数交给了用户，便于用户根据实际业务场景进行调整。注意：AOF保存过程总是先<code>写盘</code>再<code>刷盘</code>，如无<code>写盘</code>则直接返回，本轮不做任何数据持久化工作。</p>
+<ul>
+<li><p><code>always</code> 每次<code>写盘</code>之后立即<code>刷盘</code></p>
+<p>对AOF缓冲区<code>server.aof_buf</code>的数据执行一次性全部<code>写盘</code>动作。</p>
+<ul>
+<li>如果一次性全部写入成功，则执行同步阻塞式<code>刷盘</code>动作，之后将AOF缓冲区清空，本轮<code>落盘</code>成功完成。</li>
+<li>如果未成功写入任何数据，则Redis进程直接<code>exit</code>。</li>
+<li>如果只成功写入部分数据，那么需要先将本次已写入的数据删除，之后进程直接<code>exit</code>，这样可以确保AOF文件只保存完整的命令数据。</li>
+</ul>
+</li>
+<li><p><code>everysec</code> <code>写盘</code>后每秒执行一次<code>刷盘</code></p>
+<p>Redis为此策略单独构造了一个后台异步<code>刷盘</code>线程，作为“消费者”专职实时消费“<code>刷盘</code>任务队列”。</p>
+<p>那么主进程作为生产者何时向该队列提交任务呢？这个由是否进行<code>写盘</code>决定的，即是否<code>写盘</code>决定后续是否提交<code>刷盘</code>任务。Redis针对两种场景分别做了细致性的策略优化，分为everysec强<code>写盘</code>与everysec弱<code>写盘</code>。</p>
+<ul>
+<li><p>everysec强<code>写盘</code>模式</p>
+<p>主进程不考虑队列中是否有待处理的任务，直接<code>写盘</code>。在Redis进程停服前会采用此模式，确保AOF数据无遗漏。</p>
+</li>
+<li><p>everysec弱<code>写盘</code>模式</p>
+<p>主进程在本轮<code>写盘</code>之前先查看一下“刷盘任务队列”里是否还有待处理的任务。如果首次发现有待处理的任务，说明后台<code>刷盘</code>线程很忙，正在进行的<code>刷盘</code>延迟很大。Redis此时会开启“延迟落盘”策略，在记下开启时刻之后整体返回，本轮不<code>落盘</code>，避免引起更多延迟，交由下一轮的AOF<code>落盘</code>。而如果本轮发现队列里依旧有待处理任务，而且当前已经处于“延迟落盘”，但是距离模式开启时刻在2秒以内，本轮也不<code>落盘</code>，直接返回。Redis 在everysec策略下均会采用该模式以确保更优的性能。</p>
+</li>
+</ul>
+<p>对AOF缓冲区<code>server.aof_buf</code>数据执行一次性全部<code>写盘</code>动作后，Redis会根据<code>写盘</code>结果与时间差，最终决定是否提交异步<code>刷盘</code>任务。</p>
+<ul>
+<li><p><code>写盘</code>成功：将累积的全部增量数据<code>write()</code>到AOF文件</p>
+<p>如果当前时刻距离最后一次主动<code>刷盘</code>已超过1秒，则将AOF文件句柄提交到后台异步<code>刷盘</code>任务队列，并将AOF缓冲区清空，本轮落盘成功完成。该任务会由后台专职线程异步执行阻塞式<code>刷盘</code>。</p>
+</li>
+<li><p><code>写盘</code>失败：AOF文件里未成功写入任何增量数据</p>
+<p>记录AOF<code>写盘</code>失败标记，不执行后续刷盘动作，直接返回，待由下一轮的AOF<code>落盘</code>。</p>
+</li>
+<li><p><code>写盘</code>部分成功：AOF文件里只写入部分数据</p>
+<p>AOF内存缓冲区里的数据自身是完整的，而当前文件里只写入了部分数据，为保证AOF文件的完整性，需要先将本轮写入AOF文件的数据删除，不执行后续刷盘动作，直接返回，待由下一轮的AOF<code>落盘</code>。</p>
+</li>
+</ul>
+</li>
+<li><p><code>no</code> 只写盘不主动<code>刷盘</code>，由操作系统处理<code>刷盘</code></p>
+<p>对AOF缓冲区<code>server.aof_buf</code>的数据执行一次性全部<code>写盘</code>动作。</p>
+<ul>
+<li>如果一次性全部写入成功，则将AOF缓冲区清空，本轮<code>落盘</code>成功完成，Linux内核一般30秒进行刷盘持久化。</li>
+<li>如果未成功写入任何数据，记录AOF<code>写盘</code>失败标记，无后续刷盘动作，直接返回，待由下一轮的AOF<code>落盘</code>。</li>
+<li>如果只成功写入部分数据，那么需要将本轮写入AOF文件的数据删除，无后续刷盘动作，直接返回，待由下一轮的AOF<code>落盘</code>。</li>
+</ul>
+</li>
+</ul>
+<h3 id="4-7-Rewrite-AOF"><a href="#4-7-Rewrite-AOF" class="headerlink" title="4.7 Rewrite-AOF"></a>4.7 Rewrite-AOF</h3><p>AOF文件随着时间会越来越大，必然会拖慢Redis重启回放AOF文件的速度。因此，Redis支持对AOF文件进行重建，以RESP格式保存内存里的最新数据，并在此期间依旧可以正常执行并保存外部用户的新命令。</p>
+<h4 id="4-7-1-开启方式"><a href="#4-7-1-开启方式" class="headerlink" title="4.7.1 开启方式"></a>4.7.1 开启方式</h4><ul>
+<li><p>被动方式</p>
+<p>用户通过API接口发送<code>bgrewriteaof</code>命令，Redis server无阻塞式的开启Rewrite-AOF过程。当然用户是无法通过接口获得Rewrite-AOF的执行终态结果，只能收到表示是否开启Rewrite的结果。</p>
+</li>
+<li><p>主动方式</p>
+<p>Redis server可以根据自身运行情况以决定是否自动开启Rewrite-AOF过程，无需外部命令介入。可以通过如下配置参数决定是否开启以及何时开启主动Rewrite-AOF。</p>
+<ol>
+<li>appendonly 是否开启AOF功能</li>
+<li>auto-aof-rewrite-percentage 自动Rewrite-AOF阈值：依据AOF文件大小的增加百分比</li>
+<li>auto-aof-rewrite-min-size 自动Rewrite-AOF阈值：最低AOF文件大小</li>
+</ol>
+</li>
+</ul>
+<h4 id="4-7-2-Rewrite-AOF过程"><a href="#4-7-2-Rewrite-AOF过程" class="headerlink" title="4.7.2 Rewrite-AOF过程"></a>4.7.2 Rewrite-AOF过程</h4><p>Rewrite-AOF过程也是主要用的<code>fork()</code>子进程将内存快照数据保存到新的AOF文件里，但是因为AOF文件是需要实时记录用户的新命令，所以在Rewrite-AOF过程中还需要将增量命令数据同步保存到新AOF文件里。整体过程大致分3部分：<code>fork()</code>子进程保存快照数据；主进程周期性同步增量命令给子进程；子进程完结以及主进程进行的收尾工作。我们在这里展开说明一下。</p>
+<ul>
+<li><p>Rewrite-AOF保存现有内存数据：<code>fork()</code>子进程保存快照数据</p>
+<p>在符合一定的前提条件后，主进程准备开启Rewrite-AOF过程。与RDB保存过程类似，由主进程<code>fork()</code>的子进程专职保存内存里的既有数据，只不过Rewrite-AOF过程里是以AOF格式保存。与此同时，主进程并行处理原有的既定任务，例如执行client新命令并将其保存到现有的AOF文件中；周期性的其他任务等。</p>
+<p>这里特别说明一下，在子进程保存自身内存数据的同时，主进程仍然需要正常进行数据持久化，即在Rewrite-AOF期间，主进程保存新命令到原有AOF文件，而子进程保存内存快照数据到新AOF文件里，可想而知此时有两份文件正在进行写操作。为减少对磁盘的冲击，Redis作者提供了一个配置参数<code>no-appendfsync-on-rewrite</code>，控制在后台子进程保存数据时，是否暂停主进程里的主动刷盘<code>fdatasync</code>操作。配置为<code>yes</code>时，Redis主进程对AOF文件正常写盘但是暂停刷盘，将相关资源向子进程倾斜，优先保证子进程写操作尽快完成。不过此时会让原有的AOF数据健壮性较差，如遇到断电等突发故障会导致部分数据丢失，某些系统下可能会有30秒左右的数据丢失。建议只在遇到有明显延迟现象时，才设置为<code>yes</code>，一般默认情况下设置为<code>no</code>。</p>
+</li>
+<li><p>Rewrite-AOF过程中同步增量命令：父进程周期性同步增量命令给子进程</p>
+<p>AOF格式的特点就是实时保存用户的操作命令。在进行Rewrite-AOF过程中，主进程将执行成功的新命令写入原有的AOF文件，那么这些新命令如何保存到新的AOF文件中呢？在讲解Redis采用的方案之前，我们自己不妨先思考一下有哪些措施？</p>
+<ol>
+<li><p>主进程存</p>
+<p> 子进程不保存任何增量命令，全权由主进程记录增量命令。待子进程完结后，主进程将累积的所有增量命令保存到新AOF文件中。</p>
+<p> 优点：实现简单，各进程之间无需数据通信。</p>
+<p> 缺点：如果累积了大量的增量数据，那么主进程会耗费较长时间在此处，必然会阻塞了其他任务的执行，影响Redis性能。</p>
+</li>
+<li><p>子进程存</p>
+<p> 子进程负责增量命令保存。在主进程将增量命令同步给子进程之后，子进程将其保存到新AOF文件中。</p>
+<p> 优点：不会长时间阻塞主进程，性能影响较小。</p>
+<p> 缺点：实现复杂，需要处理大量的进程间数据交互工作。</p>
+</li>
+</ol>
+<p>Redis选择了第二种对性能更加友好的方案，如下我们分析一下具体实现细节。</p>
+<ul>
+<li><p>主进程侧</p>
+<p>主进程使用<code>块链</code>累积增量数据，并周期性的同步给子进程。</p>
+<ul>
+<li>内存存储方式<figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line"><span class="meta">#<span class="meta-keyword">define</span> AOF_RW_BUF_BLOCK_SIZE (1024*1024*10)    <span class="comment">/* 10 MB per block */</span></span></span><br><span class="line"></span><br><span class="line"><span class="keyword">typedef</span> <span class="class"><span class="keyword">struct</span> <span class="title">aofrwblock</span> &#123;</span></span><br><span class="line">  <span class="keyword">unsigned</span> <span class="keyword">long</span> used, <span class="built_in">free</span>;</span><br><span class="line">  <span class="keyword">char</span> buf[AOF_RW_BUF_BLOCK_SIZE];</span><br><span class="line">&#125; aofrwblock;</span><br></pre></td></tr></table></figure>
+
+</li>
+</ul>
+<p>该<code>块链</code>结构专门存储大量的不定长数据，以该结构体作为<code>value</code>存到<code>list</code>链表中，整体形成<code>块链</code>，实际数据被分割有序保存到该链表中。主进程在成功执行新的用户命令并存入原有AOF文件之后，会将同一份命令存入此<code>块链</code>的最后一块中，如只能保存部分命令数据，则主进程从内核申请<code>8+8+10M</code>堆内存，将剩余数据存入该块，如此循环直至将命令数据全部分割存储完毕。</p>
+<ul>
+<li>发送方式</li>
+</ul>
+<p>主进程会在<code>fork()</code>子进程之前，使用<code>pipe()</code>创建3组无名管道共6个文件句柄，作用如下</p>
+<table>
+<thead>
+<tr>
+<th align="center">组别</th>
+<th align="center">文件句柄名</th>
+<th align="center">阻塞类别</th>
+<th align="center">读/写</th>
+<th align="center">通道类别</th>
+<th align="center">说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="center">1</td>
+<td align="center">server.aof_pipe_write_data_to_child</td>
+<td align="center">Non-Block</td>
+<td align="center">write</td>
+<td align="center">数据</td>
+<td align="center">主-&gt;子，发送增量数据</td>
+</tr>
+<tr>
+<td align="center">1</td>
+<td align="center">server.aof_pipe_read_data_from_parent</td>
+<td align="center">Non-Block</td>
+<td align="center">read</td>
+<td align="center">数据</td>
+<td align="center">子&lt;-主，接收增量数据</td>
+</tr>
+<tr>
+<td align="center">2</td>
+<td align="center">server.aof_pipe_write_ack_to_parent</td>
+<td align="center">Block</td>
+<td align="center">write</td>
+<td align="center">控制</td>
+<td align="center">子-&gt;主，发送期望结束符号’!’<p>期望主进程中止发送增量数据</td>
+</tr>
+<tr>
+<td align="center">2</td>
+<td align="center">server.aof_pipe_read_ack_from_child</td>
+<td align="center">Block</td>
+<td align="center">read</td>
+<td align="center">控制</td>
+<td align="center">主&lt;-子，接收期望结束符号’!’</td>
+</tr>
+<tr>
+<td align="center">3</td>
+<td align="center">server.aof_pipe_write_ack_to_child</td>
+<td align="center">Block</td>
+<td align="center">write</td>
+<td align="center">控制</td>
+<td align="center">主-&gt;子，发送确认结束符号’!’<p>主进程确认中止</td>
+</tr>
+<tr>
+<td align="center">3</td>
+<td align="center">server.aof_pipe_read_ack_from_parent</td>
+<td align="center">Block</td>
+<td align="center">read</td>
+<td align="center">控制</td>
+<td align="center">子&lt;-主，接收确认结束符号’!’</td>
+</tr>
+</tbody></table>
+<p>主进程每次将增量命令分割存储到<code>块链</code>之后，都会在核心事件分配器上注册<code>server.aof_pipe_write_data_to_child</code>句柄的异步写事件。当<code>server.aof_pipe_write_data_to_child</code>句柄可写时，则从头遍历<code>块链</code>，按照节点顺序将<code>aofrwblock.buf</code>里的数据写入<code>server.aof_pipe_write_data_to_child</code>句柄，每写完一个节点的数据就直接从链表中删除该节点，直至[写入失败]or[块链为空]才中止。</p>
+<p>如果<code>块链</code>数据很多，主进程每次发送尽可能多的<code>块链</code>数据会不会引起阻塞呢？应该不会的，作者利用如下两个措施以避免引起长阻塞：</p>
+<ol>
+<li><p>上述句柄都是无名管道的“两端”，而无名管道的内核缓冲区是上限值。</p>
+<blockquote>
+<p>A pipe has a limited capacity.  If the pipe is full, then a write(2) will block or fail, depending on whether the O_NONBLOCK flag is set.</p>
+<p>In Linux versions before 2.6.11, the capacity of a pipe was the same as the system page size (e.g., 4096 bytes on i386).  Since Linux2.6.11, the pipe capacity is 16 pages (i.e., 65,536 bytes in a system with a page size of 4096 bytes).<span style="color:red;">[4]</span> </p>
+</blockquote>
+</li>
+<li><p>用于发送/接收增量数据的管道句柄均是非阻塞模式。</p>
+</li>
+</ol>
+</li>
+<li><p>子进程侧</p>
+<p>子进程周期性的接收主进程发来的增量数据，并按序暂存在自身进程内存中，待子进程将快照内存全量Rewrite到新AOF文件之后，在把暂存的数据追加到新AOF文件的尾部。</p>
+<ul>
+<li><p>内存存储方式</p>
+<p>子进程使用<code>server.aof_child_diff</code>变量存储主进程发来的增量数据，该变量类型为sds，即字符数组。子进程每收到新数据后，均会调用<code>sdscatlen</code>追加到尾部。</p>
+<p>子进程需要一直在内存里持有<code>server.aof_child_diff</code>数据，直至内存快照数据全量写入新的AOF文件后，才会将<code>server.aof_child_diff</code>的数据追加到文件的尾部。</p>
+<p>注意子进程这里并未使用主进程用到的<code>块链</code>内存结构，原因未知。。。</p>
+</li>
+<li><p>接收方式 </p>
+<p>既然增量数据是周期性发送的，所以子进程必然需要周期性接收才行。而子进程都是一直处理内存快照数据写入新AOF文件，那么这个周期性接收工作在哪个环节执行呢？Redis作者为此设置了一个游标变量，该游标是跟踪内存快照写入文件的字节数，每写超过10K字节，子进程就中途调用一下接收函数。该接收函数每次接收尽可能多的增量数据，直至异常才会中止本轮接收。为避免引起阻塞，该接收函数所操作的句柄<code>server.aof_pipe_read_data_from_parent</code>设置为非阻塞式，而且每次read最多65536字节，这个也是针对<code>pipe</code>内核缓冲区大小所设定的。</p>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+<li><p>Rewrite-AOF结束：子进程完结以及主进程处理收尾工作</p>
+<p>子进程将内存快照数据全量写入AOF文件之后，就需要着手处理自身的收尾工作：如何持久化已接收的增量命令以及结束自身任务等事项。此时主进程与子进程是并行运行，而增量命令间歇性的从主进程流向子进程。内存<code>COW</code>机制导致的内存消耗以及两份磁盘io消耗，需要子进程尽快完结。无名管道缓冲区里的数据如何优雅的接收干净，这里需要有一个清晰的数据边界，确保双方无遗漏任何数据。为此Redis作者使用了2组<code>pipe</code>作为控制通道使用：1) 子进程期望主进程中止发送；2) 主进程确认中止发送。这两步使用的结束符号是’!’，先是由子进程发送’!’，主进程一旦从<code>server.aof_pipe_read_ack_from_child</code>句柄中收到此符号，便会从核心事件分配器中注销之前的<code>server.aof_pipe_write_data_to_child</code>句柄写事件，并将<code>server.aof_stop_sending_diff</code>标记字段置为1，同时发送’!’给子进程，表示主进程已确认收到对方发送的结束符号以及自身也中止发送。</p>
+<p>这里有个细节，我们已经注销了发送增量数据的写事件，为什么还需要使用一个标记字段呢？为分析这个问题，我们需要从核心事件分配器的角度来分析，主进程在核心事件分配器里注册了2个异步事件：</p>
+<table>
+<thead>
+<tr>
+<th align="center">句柄</th>
+<th align="center">读/写</th>
+<th align="center">用途</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="center">server.aof_pipe_read_ack_from_child</td>
+<td align="center">read事件</td>
+<td align="center">主进程接收期望结束符号’!’</td>
+</tr>
+<tr>
+<td align="center">server.aof_pipe_write_data_to_child</td>
+<td align="center">write事件</td>
+<td align="center">主进程发送增量数据</td>
+</tr>
+</tbody></table>
+<p>上述两个异步事件在执行时并无先后顺序，可能出现核心事件分配器判定两个句柄同时可操作，实际执行时是先处理read事件，再处理write事件。那么在处理read事件的最后会由主进程发送’!’给子进程，这就要求在处理本轮的write事件时立即中止发送，这个正是该标记字段的用处。处理read事件时直接注销下一轮的write事件，并通过标记字段中止本轮已触发且待执行的write事件，“双保险”确保主进程再无数据发送给子进程。</p>
+<p>回过头来，我们再看子进程这一侧。子进程在发送结束符号’!’期望主进程中止发送之后，就在等待主进程的回复，注意此处的等待是阻塞式，因为此时的子进程只剩下持久化内存里收到的增量数据任务，需要对方主进程先中止推送。这个阻塞式等待至多5秒，如果超时则子进程认为本次Rewrite-AOF失败，在删除新的AOF文件之后子进程退出。如果在5秒内收到了对方的’!’，子进程就判定主进程已经中止推送数据，自己只需要把无名管道中的遗留的数据read出来即可。至此子进程已经接收到所有的增量命令数据，只需要将其原样追加到新AOF文件即可。之后子进程将<code>COW</code>所涉及的内存使用情况发送给主进程（这一步与RDB完结时的通知过程相同）。</p>
+<p>至此，子进程已经完结，磁盘上存有一份新的AOF文件，但是主进程这一侧依旧使用的是原有AOF文件，最重要的是主进程还在用<code>块链</code>累积新的增量命令，这些新的增量命令并没有由子进程保存到新AOF文件中。完成Rewrite-AOF最后一步的只能是主进程这一侧。主进程通过<code>wait3()</code>获知子进程已经正常完结后，将<code>块链</code>中的数据追加到新AOF文件里，并完成新AOF文件的<code>rename()</code>工作（此处为避免删除旧AOF文件阻塞主进程，Redis使用了一个小技巧，详情可参考《高性能原因》的“数据持久化层面”章节），Rewrite-AOF过程彻底结束。</p>
+</li>
+</ul>
+<hr>
+<h2 id="5-RDB与AOF组合使用"><a href="#5-RDB与AOF组合使用" class="headerlink" title="5. RDB与AOF组合使用"></a>5. RDB与AOF组合使用</h2><p>RDB格式紧密，存储高效，重启加载快，但是只能记录快照数据，异常时会有几分钟左右的数据丢失。</p>
+<p>AOF格式实时记录数据，文件可读性强，异常时约有2秒左右的数据丢失，但是存储空间占用较大，且重启需回放，加载慢。</p>
+<p>如果要开启Redis持久化功能，Redis作者建议两种模式均开启，这样RDB文件用于历史归档灾备，AOF文件数据更安全。另外为避免Rewrite-AOF过程与RDB同时运行导致磁盘IO暴增影响性能，Redis内部实现时只允许同一时刻只有一种任务在执行。当有用户通过API通知Redis server执行bgrewriteaof时，如果此时正有RDB子进程，那么Redis会在RDB完成后预约一次Rewrite-AOF，以确保两项任务错峰运行。另外Redis重启时，会优先加载AOF文件，以尽可能完整的重建内存。</p>
+<p>介于上述两种格式各有千秋，最新版本的Redis将两者结合，最终形成一个混合模式的AOF文件。在Rewrite-AOF过程里，当主进程<code>fork()</code>出子进程后，子进程以RDB格式将内存里的快照数据全量保存到新AOF文件中，之后再以AOF格式追加增量命令数据。该混合模式的AOF文件既可以加快的Rewrite-AOF过程与重启速度，又能兼顾数据安全。</p>
+<figure class="highlight shell"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line"><span class="meta">#</span><span class="bash"> 控制是否开启混合模式的AOF，yes表示开启</span></span><br><span class="line">aof-use-rdb-preamble yes</span><br></pre></td></tr></table></figure>
+
+<hr>
+<p><strong><em>参考资料</em></strong></p>
+<ol>
+<li><a target="_blank" rel="noopener" href="https://redis.io/topics/persistence">https://redis.io/topics/persistence</a></li>
+<li><a target="_blank" rel="noopener" href="http://oldblog.antirez.com/post/redis-persistence-demystified.html">http://oldblog.antirez.com/post/redis-persistence-demystified.html</a></li>
+<li><a target="_blank" rel="noopener" href="https://unix.stackexchange.com/questions/33381/getting-information-about-a-process-memory-usage-from-proc-pid-smaps">https://unix.stackexchange.com/questions/33381/getting-information-about-a-process-memory-usage-from-proc-pid-smaps</a></li>
+<li><a target="_blank" rel="noopener" href="http://man7.org/linux/man-pages/man7/pipe.7.html">http://man7.org/linux/man-pages/man7/pipe.7.html</a></li>
+<li>Advanced Programming in the UNIX Environment</li>
+<li><a target="_blank" rel="noopener" href="https://stackoverflow.com/questions/22032120/closing-pipe-file-descriptor-in-c">https://stackoverflow.com/questions/22032120/closing-pipe-file-descriptor-in-c</a></li>
+<li><a target="_blank" rel="noopener" href="https://redis.io/topics/protocol">https://redis.io/topics/protocol</a></li>
+</ol>
+
+    </div>
+
+    
+    
+    
+
+      <footer class="post-footer">
+          <div class="post-tags">
+              <a href="/tags/Redis/" rel="tag"># Redis</a>
+              <a href="/tags/C/" rel="tag"># C</a>
+          </div>
+
+        
+
+
+        
+    <div class="post-nav">
+      <div class="post-nav-item">
+    <a href="/2020/06/10/2020/2020-06-10-Redis-intset%E7%BB%93%E6%9E%84%E5%9B%BE/" rel="prev" title="Redis intset结构图">
+      <i class="fa fa-chevron-left"></i> Redis intset结构图
+    </a></div>
+      <div class="post-nav-item">
+    <a href="/2020/08/12/2020/2020-08-12-%E4%BD%BF%E7%94%A8%E9%9A%A7%E9%81%93%E6%8A%80%E6%9C%AF%E6%90%AD%E5%BB%BAIPv6%E5%86%85%E7%BD%91%E8%AE%BF%E9%97%AEIPv4%E7%9A%84%E4%BA%92%E8%81%94%E7%BD%91%E7%8E%AF%E5%A2%83/" rel="next" title="使用隧道技术搭建IPv6内网访问IPv4的互联网环境">
+      使用隧道技术搭建IPv6内网访问IPv4的互联网环境 <i class="fa fa-chevron-right"></i>
+    </a></div>
+    </div>
+      </footer>
+    
+  </article>
+  
+  
+  
+
+
+
+          </div>
+          
+
+<script>
+  window.addEventListener('tabs:register', () => {
+    let { activeClass } = CONFIG.comments;
+    if (CONFIG.comments.storage) {
+      activeClass = localStorage.getItem('comments_active') || activeClass;
+    }
+    if (activeClass) {
+      let activeTab = document.querySelector(`a[href="#comment-${activeClass}"]`);
+      if (activeTab) {
+        activeTab.click();
+      }
+    }
+  });
+  if (CONFIG.comments.storage) {
+    window.addEventListener('tabs:click', event => {
+      if (!event.target.matches('.tabs-comment .tab-content .tab-pane')) return;
+      let commentClass = event.target.classList[1];
+      localStorage.setItem('comments_active', commentClass);
+    });
+  }
+</script>
+
+        </div>
+          
+  
+  <div class="toggle sidebar-toggle">
+    <span class="toggle-line toggle-line-first"></span>
+    <span class="toggle-line toggle-line-middle"></span>
+    <span class="toggle-line toggle-line-last"></span>
+  </div>
+
+  <aside class="sidebar">
+    <div class="sidebar-inner">
+
+      <ul class="sidebar-nav motion-element">
+        <li class="sidebar-nav-toc">
+          文章目录
+        </li>
+        <li class="sidebar-nav-overview">
+          站点概览
+        </li>
+      </ul>
+
+      <!--noindex-->
+      <div class="post-toc-wrap sidebar-panel">
+          <div class="post-toc motion-element"><ol class="nav"><li class="nav-item nav-level-2"><a class="nav-link" href="#1-%E5%9F%BA%E7%A1%80%E6%8A%80%E6%9C%AF%E4%BB%8B%E7%BB%8D"><span class="nav-text">1. 基础技术介绍</span></a><ol class="nav-child"><li class="nav-item nav-level-3"><a class="nav-link" href="#1-1-%E6%96%87%E4%BB%B6IO"><span class="nav-text">1.1 文件IO</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#1-2-%E6%A0%87%E5%87%86IO%E5%BA%93"><span class="nav-text">1.2 标准IO库</span></a></li></ol></li><li class="nav-item nav-level-2"><a class="nav-link" href="#2-%E6%9C%AC%E6%96%87%E6%9C%AF%E8%AF%AD%E8%AF%B4%E6%98%8E"><span class="nav-text">2. 本文术语说明</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#3-RDB"><span class="nav-text">3. RDB</span></a><ol class="nav-child"><li class="nav-item nav-level-3"><a class="nav-link" href="#3-1-RDB%E6%A0%BC%E5%BC%8F"><span class="nav-text">3.1 RDB格式</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#3-2-RDB%E4%BC%98%E7%82%B9"><span class="nav-text">3.2 RDB优点</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#3-3-RDB%E4%B8%8D%E8%B6%B3"><span class="nav-text">3.3 RDB不足</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#3-4-RDB%E9%85%8D%E7%BD%AE%E5%8F%82%E6%95%B0"><span class="nav-text">3.4 RDB配置参数</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#3-5-RDB%E6%8C%81%E4%B9%85%E5%8C%96%E8%BF%87%E7%A8%8B"><span class="nav-text">3.5 RDB持久化过程</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#3-6-RDB%E7%9A%84write%E5%86%99%E7%9B%98%E4%B8%8Efdatasync%E5%88%B7%E7%9B%98%E9%80%BB%E8%BE%91"><span class="nav-text">3.6 RDB的write写盘与fdatasync刷盘逻辑</span></a></li></ol></li><li class="nav-item nav-level-2"><a class="nav-link" href="#4-AOF"><span class="nav-text">4. AOF</span></a><ol class="nav-child"><li class="nav-item nav-level-3"><a class="nav-link" href="#4-1-AOF%E6%A0%BC%E5%BC%8F"><span class="nav-text">4.1 AOF格式</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#4-2-AOF%E4%BC%98%E7%82%B9"><span class="nav-text">4.2 AOF优点</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#4-3-AOF%E4%B8%8D%E8%B6%B3"><span class="nav-text">4.3 AOF不足</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#4-4-AOF%E9%85%8D%E7%BD%AE%E5%8F%82%E6%95%B0"><span class="nav-text">4.4 AOF配置参数</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#4-5-AOF%E6%8C%81%E4%B9%85%E5%8C%96%E8%BF%87%E7%A8%8B"><span class="nav-text">4.5 AOF持久化过程</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#4-6-AOF%E7%9A%84write%E5%86%99%E7%9B%98%E4%B8%8Efdatasync%E5%88%B7%E7%9B%98%E9%80%BB%E8%BE%91"><span class="nav-text">4.6 AOF的write写盘与fdatasync刷盘逻辑</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#4-7-Rewrite-AOF"><span class="nav-text">4.7 Rewrite-AOF</span></a><ol class="nav-child"><li class="nav-item nav-level-4"><a class="nav-link" href="#4-7-1-%E5%BC%80%E5%90%AF%E6%96%B9%E5%BC%8F"><span class="nav-text">4.7.1 开启方式</span></a></li><li class="nav-item nav-level-4"><a class="nav-link" href="#4-7-2-Rewrite-AOF%E8%BF%87%E7%A8%8B"><span class="nav-text">4.7.2 Rewrite-AOF过程</span></a></li></ol></li></ol></li><li class="nav-item nav-level-2"><a class="nav-link" href="#5-RDB%E4%B8%8EAOF%E7%BB%84%E5%90%88%E4%BD%BF%E7%94%A8"><span class="nav-text">5. RDB与AOF组合使用</span></a></li></ol></div>
+      </div>
+      <!--/noindex-->
+
+      <div class="site-overview-wrap sidebar-panel">
+        <div class="site-author motion-element" itemprop="author" itemscope itemtype="http://schema.org/Person">
+  <p class="site-author-name" itemprop="name">wapthen</p>
+  <div class="site-description" itemprop="description"></div>
+</div>
+<div class="site-state-wrap motion-element">
+  <nav class="site-state">
+      <div class="site-state-item site-state-posts">
+          <a href="/archives">
+          <span class="site-state-item-count">14</span>
+          <span class="site-state-item-name">日志</span>
+        </a>
+      </div>
+      <div class="site-state-item site-state-tags">
+            <a href="/tags/">
+          
+        <span class="site-state-item-count">8</span>
+        <span class="site-state-item-name">标签</span></a>
+      </div>
+  </nav>
+</div>
+  <div class="links-of-author motion-element">
+      <span class="links-of-author-item">
+        <a href="https://github.com/wapthen" title="GitHub → https:&#x2F;&#x2F;github.com&#x2F;wapthen" rel="noopener" target="_blank"><i class="fab fa-github fa-fw"></i>GitHub</a>
+      </span>
+      <span class="links-of-author-item">
+        <a href="mailto:wapthen@163.com" title="E-Mail → mailto:wapthen@163.com" rel="noopener" target="_blank"><i class="fa fa-envelope fa-fw"></i>E-Mail</a>
+      </span>
+  </div>
+
+
+
+      </div>
+
+    </div>
+  </aside>
+  <div id="sidebar-dimmer"></div>
+
+
+      </div>
+    </main>
+
+    <footer class="footer">
+      <div class="footer-inner">
+        
+
+        
+
+<div class="copyright">
+  
+  &copy; 
+  <span itemprop="copyrightYear">2020</span>
+  <span class="with-love">
+    <i class="fa fa-heart"></i>
+  </span>
+  <span class="author" itemprop="copyrightHolder">wapthen</span>
+</div>
+  <div class="powered-by">由 <a href="https://hexo.io/" class="theme-link" rel="noopener" target="_blank">Hexo</a> & <a href="https://theme-next.org/" class="theme-link" rel="noopener" target="_blank">NexT.Gemini</a> 强力驱动
+  </div>
+
+        
+
+
+
+
+
+
+
+
+      </div>
+    </footer>
+  </div>
+
+  
+  <script src="/lib/anime.min.js"></script>
+  <script src="/lib/velocity/velocity.min.js"></script>
+  <script src="/lib/velocity/velocity.ui.min.js"></script>
+
+<script src="/js/utils.js"></script>
+
+<script src="/js/motion.js"></script>
+
+
+<script src="/js/schemes/pisces.js"></script>
+
+
+<script src="/js/next-boot.js"></script>
+
+
+
+
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  
+
+  
+
+</body>
+</html>

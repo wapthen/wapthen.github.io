@@ -1,0 +1,704 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=2">
+<meta name="theme-color" content="#222">
+<meta name="generator" content="Hexo 5.0.2">
+  <link rel="apple-touch-icon" sizes="180x180" href="/images/apple-touch-icon-next.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/images/favicon-32x32-next.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/images/favicon-16x16-next.png">
+  <link rel="mask-icon" href="/images/logo.svg" color="#222">
+
+<link rel="stylesheet" href="/css/main.css">
+
+
+<link rel="stylesheet" href="/lib/font-awesome/css/all.min.css">
+
+<script id="hexo-configurations">
+    var NexT = window.NexT || {};
+    var CONFIG = {"hostname":"wapthen.githu.io","root":"/","scheme":"Gemini","version":"8.0.0-rc.2","exturl":false,"sidebar":{"position":"left","display":"post","padding":18,"offset":12,"onmobile":false},"copycode":{"enable":false,"show_result":false,"style":null},"back2top":{"enable":true,"sidebar":false,"scrollpercent":false},"bookmark":{"enable":false,"color":"#222","save":"auto"},"fancybox":false,"mediumzoom":false,"lazyload":false,"pangu":false,"comments":{"style":"tabs","active":null,"storage":true,"lazyload":false,"nav":null},"algolia":{"hits":{"per_page":10},"labels":{"input_placeholder":"Search for Posts","hits_empty":"We didn't find any results for the search: ${query}","hits_stats":"${hits} results found in ${time} ms"}},"localsearch":{"enable":false,"trigger":"auto","top_n_per_article":1,"unescape":false,"preload":false},"motion":{"enable":true,"async":false,"transition":{"post_block":"fadeIn","post_header":"slideDownIn","post_body":"slideDownIn","coll_header":"slideLeftIn","sidebar":"slideUpIn"}}};
+  </script>
+
+  <meta name="description" content="Redis为保证服务的高可用，必然会选择集群的方式来组建Redis集群。随着Redis的逐步迭代演进，搭建集群的方式也是日渐丰富。">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Redis Cluster集群代码分析">
+<meta property="og:url" content="https://wapthen.githu.io/2020/05/25/2020/2020-05-24-Redis-Cluster/index.html">
+<meta property="og:site_name" content="记录思考">
+<meta property="og:description" content="Redis为保证服务的高可用，必然会选择集群的方式来组建Redis集群。随着Redis的逐步迭代演进，搭建集群的方式也是日渐丰富。">
+<meta property="og:locale" content="zh_CN">
+<meta property="og:image" content="https://wapthen.githu.io/images/2020/clusterState.png">
+<meta property="og:image" content="https://wapthen.githu.io/images/2020/clusterNode.png">
+<meta property="og:image" content="https://wapthen.githu.io/images/2020/clusterLink.png">
+<meta property="og:image" content="https://wapthen.githu.io/image/cluster_ping.png">
+<meta property="og:image" content="https://wapthen.githu.io/images/cluster_meet.png">
+<meta property="og:image" content="https://wapthen.githu.io/images/cluster_pong.png">
+<meta property="og:image" content="https://wapthen.githu.io/images/cluster_fail.png">
+<meta property="og:image" content="https://note.youdao.com/yws/public/resource/aec7551a5c35e3ea8d776bbbb3488382/xmlnote/WEBRESOURCE5038f49e4076528144efa5480a060416/19305">
+<meta property="article:published_time" content="2020-05-25T01:00:00.000Z">
+<meta property="article:modified_time" content="2020-08-12T03:14:45.589Z">
+<meta property="article:author" content="wapthen">
+<meta property="article:tag" content="Redis">
+<meta property="article:tag" content="C">
+<meta property="article:tag" content="Redis Cluster">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:image" content="https://wapthen.githu.io/images/2020/clusterState.png">
+
+<link rel="canonical" href="https://wapthen.githu.io/2020/05/25/2020/2020-05-24-Redis-Cluster/">
+
+
+<script id="page-configurations">
+  // https://hexo.io/docs/variables.html
+  CONFIG.page = {
+    sidebar: "",
+    isHome : false,
+    isPost : true,
+    lang   : 'zh-CN'
+  };
+</script>
+
+  <title>Redis Cluster集群代码分析 | 记录思考</title>
+  
+
+
+
+
+
+
+  <noscript>
+  <style>
+  .use-motion .brand,
+  .use-motion .menu-item,
+  .sidebar-inner,
+  .use-motion .post-block,
+  .use-motion .pagination,
+  .use-motion .comments,
+  .use-motion .post-header,
+  .use-motion .post-body,
+  .use-motion .collection-header { opacity: initial; }
+
+  .use-motion .site-title,
+  .use-motion .site-subtitle {
+    opacity: initial;
+    top: initial;
+  }
+
+  .use-motion .logo-line-before i { left: initial; }
+  .use-motion .logo-line-after i { right: initial; }
+  </style>
+</noscript>
+
+</head>
+
+<body itemscope itemtype="http://schema.org/WebPage">
+  <div class="container use-motion">
+    <div class="headband"></div>
+
+    <header class="header" itemscope itemtype="http://schema.org/WPHeader">
+      <div class="header-inner"><div class="site-brand-container">
+  <div class="site-nav-toggle">
+    <div class="toggle" aria-label="切换导航栏">
+        <span class="toggle-line toggle-line-first"></span>
+        <span class="toggle-line toggle-line-middle"></span>
+        <span class="toggle-line toggle-line-last"></span>
+    </div>
+  </div>
+
+  <div class="site-meta">
+
+    <a href="/" class="brand" rel="start">
+      <span class="logo-line-before"><i></i></span>
+      <h1 class="site-title">记录思考</h1>
+      <span class="logo-line-after"><i></i></span>
+    </a>
+  </div>
+
+  <div class="site-nav-right">
+    <div class="toggle popup-trigger">
+    </div>
+  </div>
+</div>
+
+
+
+<nav class="site-nav">
+  <ul id="menu" class="main-menu menu">
+        <li class="menu-item menu-item-home">
+
+    <a href="/" rel="section"><i class="fa fa-home fa-fw"></i>首页</a>
+
+  </li>
+        <li class="menu-item menu-item-tags">
+
+    <a href="/tags/" rel="section"><i class="fa fa-tags fa-fw"></i>标签</a>
+
+  </li>
+  </ul>
+</nav>
+
+
+
+
+</div>
+    </header>
+
+    
+  <div class="back-to-top">
+    <i class="fa fa-arrow-up"></i>
+    <span>0%</span>
+  </div>
+
+
+    <main class="main">
+      <div class="main-inner">
+        <div class="content-wrap">
+          
+
+          <div class="content post posts-expand">
+            
+
+    
+  
+  
+  <article itemscope itemtype="http://schema.org/Article" class="post-block" lang="zh-CN">
+    <link itemprop="mainEntityOfPage" href="https://wapthen.githu.io/2020/05/25/2020/2020-05-24-Redis-Cluster/">
+
+    <span hidden itemprop="author" itemscope itemtype="http://schema.org/Person">
+      <meta itemprop="image" content="/images/avatar.gif">
+      <meta itemprop="name" content="wapthen">
+      <meta itemprop="description" content="">
+    </span>
+
+    <span hidden itemprop="publisher" itemscope itemtype="http://schema.org/Organization">
+      <meta itemprop="name" content="记录思考">
+    </span>
+      <header class="post-header">
+        <h1 class="post-title" itemprop="name headline">
+          Redis Cluster集群代码分析
+        </h1>
+
+        <div class="post-meta">
+            <span class="post-meta-item">
+              <span class="post-meta-item-icon">
+                <i class="far fa-calendar"></i>
+              </span>
+              <span class="post-meta-item-text">发表于</span>
+
+              <time title="创建时间：2020-05-25 09:00:00" itemprop="dateCreated datePublished" datetime="2020-05-25T09:00:00+08:00">2020-05-25</time>
+            </span>
+              <span class="post-meta-item">
+                <span class="post-meta-item-icon">
+                  <i class="far fa-calendar-check"></i>
+                </span>
+                <span class="post-meta-item-text">更新于</span>
+                <time title="修改时间：2020-08-12 11:14:45" itemprop="dateModified" datetime="2020-08-12T11:14:45+08:00">2020-08-12</time>
+              </span>
+
+          
+
+        </div>
+      </header>
+
+    
+    
+    
+    <div class="post-body" itemprop="articleBody">
+
+      
+        <p>Redis为保证服务的高可用，必然会选择集群的方式来组建Redis集群。随着Redis的逐步迭代演进，搭建集群的方式也是日渐丰富。</p>
+<a id="more"></a>
+
+<h1 id="一-Redis集群方式"><a href="#一-Redis集群方式" class="headerlink" title="一. Redis集群方式"></a>一. Redis集群方式</h1><p>目前Redis官方支持3种方式的集群模式<span style="color:red;">[1]</span>：</p>
+<p>1.1 <strong>master/slave</strong>主备模式</p>
+<p>  主备模式一般采用单主多备，备节点承接主节点异步推送的更新指令，所有主备节点均在内存中保存全量数据（即备节点为主节点的镜像）。客户的写操作只能作用于主节点，读操作可以作用于主节点，也可以作用于备节点（前提是业务场景能容忍主备数据同步延迟）。</p>
+<ul>
+<li><p>优点</p>
+<p>搭建简单，适用于学习与测试环境使用。</p>
+</li>
+<li><p>不足</p>
+<ol>
+<li>主节点只能有一个，存在单点故障；</li>
+<li>所有的写操作只能作用于主节点，同时主节点肩负着分发复制数据至备节点职责，主节点的负载较重；</li>
+<li>该模式的备节点主要用于数据备份以及承担部分业务的读请求，无法分担主节点的压力；</li>
+<li>集群扩展性差，随着业务规模的扩大，主节点承接的写操作逐步增大，而此时为应对更多的读请求，贸然增加备节点数目，会加重主节点的复制压力，主节点成为整个集群的性能瓶颈；</li>
+<li>运维方面缺失较多，需补足监控以及切换工作，以应对主节点宕机时的单点故障。</li>
+</ol>
+</li>
+</ul>
+<p>1.2 <strong>sentinel</strong> 哨兵模式</p>
+<p>  哨兵模式通过补足主备模式的自动故障切换，以解决其单点故障的风险。通过在集群中增加哨兵节点，监控主备节点的健康状况，当发现主节点故障时，由哨兵节点指导集群选主完成故障切换。哨兵节点自身的功能较为简单，不承接实际数据的读写，只负责告知当前主节点地址与监控各个节点状态。</p>
+<p>  用户每次连接Redis集群时，需要先请求哨兵节点，从其获知当前集群的主节点地址，之后再对主节点发起正式的操作请求。哨兵节点在发现主节点异常时，根据各个备节点健康状况与复制偏移量等情况，完成选主操作。</p>
+<ul>
+<li><p>优点</p>
+<p>相比于主备模式，哨兵模式集群健壮性更强，可自动完成故障切换。</p>
+</li>
+<li><p>不足</p>
+<ol>
+<li>各个备节点依旧无法分担主节点的写操作压力；</li>
+<li>集群扩展性较差，备节点数目的增加会加大主节点的负载压力；</li>
+<li>虽然引入哨兵节点应对主节点的故障切换，而哨兵节点自身也需要配置多个节点以避免哨兵单节点故障；</li>
+<li>哨兵节点职责单一，自身不负责数据存储，但在部署时依旧需要分配较为独立的硬件资源以部署“哨兵集群”，资源利用率不高；  </li>
+</ol>
+</li>
+</ul>
+<p>1.3 <strong>cluster</strong> 集群模式</p>
+<p>  相比于前两种模式，集群模式更进一步：解决单主节点的写压力；将“哨兵”功能融合到数据节点本身，以确保集群的高可用性。<strong>cluster</strong>集群共承担16384个<strong>slot</strong>槽位，各个主节点分别负责不同槽位区间，而数据则根据key-&gt;slot-&gt;node三者之间的关系，决定具体由哪个主节点负责存储，另外每个主节点名下挂载若干备节点以达到镜像主节点数据的目的。集群内部采用gossip协议同步各个节点的状态情况，并支持自动故障切换机制以应对主节点宕机问题，确保集群高可用。</p>
+<ul>
+<li><p>优点</p>
+<ol>
+<li>集群内各个主节点均可承接用户的读写操作，每个主节点的性能与主备模式下无明显差别；</li>
+<li>集群扩展性强，可以根据业务需求，扩充主备节点数目，应对用户高频读写操作；</li>
+<li>解决其他模式下数据规模受限于单机内存上限的问题，通过多个主节点承接不同slot区间，支持集群处理更大规模的数据；</li>
+<li>支持自动故障切换，保证集群高可用。</li>
+</ol>
+</li>
+<li><p>不足</p>
+<ol>
+<li><strong>cluster</strong>模式下，涉及到多key操作的API命令有一定限制，需要确保单次操作的keys均落在同一个节点上；</li>
+<li>搭建较为复杂，标准搭建规模至少需要3主3从共6节点，需要借助专用的工具进行槽位迁移工作；</li>
+<li>集群出现问题时，追查较为复杂，需分析更多环节：主备同步延迟；故障切换；gossip消息同步延迟；备节点自动迁移等；</li>
+</ol>
+</li>
+</ul>
+<h1 id="二-术语"><a href="#二-术语" class="headerlink" title="二. 术语"></a>二. 术语</h1><ul>
+<li><p><strong>nodeId</strong> 节点ID</p>
+<p>节点标识，识别节点的唯一标识，一旦分配“终生”不变，作用相当于“身份证”。节点可以清空自身数据，可以更换IP地址，可以更换主备角色。在集群视角里，它依旧还是它。而一旦节点ID变换了，就是一个全新的节点，与该节点的“历史”彻底告别。</p>
+</li>
+<li><p><strong>slot</strong> 槽位</p>
+<p>槽位决定了数据所在的节点。共有16384个槽位，集群里各个主节点分别负责不同的槽位区间。主节点的负责槽位一旦发生变换，那么数据也需要同步迁移。</p>
+</li>
+<li><p><strong>slot import</strong> 槽位迁入</p>
+<p>一个槽位只能有一个主节点负责，当涉及槽位变换时，未来负责该槽位的主节点，对该槽位的迁移过程就是槽位迁入。在此过程中，只有负责该槽位的新节点才记录该槽位的迁入信息。</p>
+</li>
+<li><p><strong>slot migrate</strong> 槽位迁出</p>
+<p>槽位变换时，当前负责该槽位的主节点，对该槽位的迁移过程就是槽位迁出。</p>
+</li>
+<li><p><strong>failover</strong> 故障切换</p>
+</li>
+<li><p><strong>slave</strong> 备节点迁移</p>
+</li>
+<li><p><strong>gossip protocol</strong> 流言协议</p>
+</li>
+<li><p><strong>config epoch</strong> 配置纪元</p>
+<p>节点自身本机视角的版本号，每个节点的配置纪元需保证在集群内不重复，确保唯一性。</p>
+</li>
+<li><p><strong>current epoch</strong> 集群纪元</p>
+<p>集群整体状态的版本号，集群内各个节点所记录的集群纪元数值需保证完全一致，且是各个节点配置纪元的最大值。集群纪元用于判定数据新旧，在gossip交互的数据，接收方对于低于本机记录的集群纪元消息不予采信。另外在故障切换阶段，集群纪元作为选举轮次依据，每一个集群纪元，主节点只能投一次票。</p>
+</li>
+<li><p><strong>pov</strong> 本机视角</p>
+<p>节点自身依据主动感知（例如：周期性发送ping消息判定连通性等）以及内部通信交换获得的数据，对各个节点状态乃至集群整体状态的理解。</p>
+</li>
+<li><p><strong>PFAIL</strong> 主观下线</p>
+<p>节点通过周期性发送ping消息，来检测集群其他节点是否存活，如一定时间内未收到回复，就会认为对方已失联，将对方状态置为PFAIL，即主观下线。</p>
+<p>主备节点均可将集群其他节点置为主观下线。</p>
+</li>
+<li><p><strong>FAIL</strong> 客观下线</p>
+<p>在本机认为目标节点（集群其他任一节点，无论主备角色）处于客观下线状态的前提之下，结合本机视角记录的集群数据：超半数主节点判定目标节点客观下线，那么本机将目标节点状态置为FAIL，即客观下线。</p>
+<p>主备节点均可将本机视角的目标节点置为客观下线，但是只有主节点才有资格向集群广播，周知所有接收方需将本机视角的目标节点置为客观下线。</p>
+</li>
+<li><p><strong>readonly</strong> 只读客户端</p>
+</li>
+<li><p><strong>orphaned master</strong> 孤儿主节点</p>
+<p>满足如下所有条件的节点被成为孤儿主节点：</p>
+<ul>
+<li>主节点；</li>
+<li>带CLUSTER_NODE_MIGRATE_TO标记；</li>
+<li>非FAIL状态；</li>
+<li>名下无备节点或者名下备节点均处于FAIL状态；</li>
+</ul>
+</li>
+<li><p><strong>announce address</strong> 宣称地址</p>
+</li>
+</ul>
+<h1 id="三-槽位"><a href="#三-槽位" class="headerlink" title="三. 槽位"></a>三. 槽位</h1><p>决定数据存储节点。无论节点共有16384个槽位，无论多大规模的数据，均有数据自身的key通过CRC16方式映射到某一个槽位。</p>
+<h2 id="3-1-槽位与数据的关系"><a href="#3-1-槽位与数据的关系" class="headerlink" title="3.1 槽位与数据的关系"></a>3.1 槽位与数据的关系</h2><p>槽位与数据的比例关系类似于1：N，即一个槽位负责若干数据的存储位置，而一个数据只对应一个槽位。基于key计算得到的slot决定key-value数据的存储位置，只要key值不变，该数据对应的槽位就不会改变。</p>
+<h2 id="3-2-槽位与节点的关系"><a href="#3-2-槽位与节点的关系" class="headerlink" title="3.2 槽位与节点的关系"></a>3.2 槽位与节点的关系</h2><p>集群里的主节点负责不同的槽位区间，共同构成16384个槽位。运维人员将这16384个槽位分配至不同的主节点，也就确定了key对应的主节点。</p>
+<p>备节点承接对应主节点的复制数据，当主节点宕机时，备节点升为主节点，继续负责原有槽位所含数据的读写请求。</p>
+<p>槽位迁移工作（例如：集群新增节点；针对性的调整某个主节点所负责的槽位区间等）不影响用户的正常读写操作。槽位迁移，对应槽位的数据也会跟随一同迁移，以确认槽位与节点关系的一致性。</p>
+<h2 id="3-3-如何将不同的key保存到一个节点"><a href="#3-3-如何将不同的key保存到一个节点" class="headerlink" title="3.3 如何将不同的key保存到一个节点"></a>3.3 如何将不同的<strong>key</strong>保存到一个节点</h2><p>介于单key-&gt;单slot-&gt;单主节点三者之间的对应关系，那么必然存在业务上归属同一组的数据，因为key值不同而最终落在不同的节点上，而<strong>cluster</strong>模式不支持单次操作多节点的场景，这导致部分API命令使用受限（例如：mset、mget等）。</p>
+<p>为了解决该问题，Redis cluster提供了一项<code>hash tag</code>的功能。用户如果需要单次操作多keys时，需要对这些keys在读写时稍作做一下改造，在多keys中使用<code>&#123;&#125;</code>标记出一组字符，Redis只使用<code>&#123;&#125;</code>内部的数据计算槽位。只要<code>&#123;&#125;</code>标记的数据相同，那么即使key本身不同，最终槽位也是相同，进而落在同一个主节点上。</p>
+<p><code>hash tag</code>并不是根本性的解决方案，毕竟业务需求时多变的，而数据的key值一旦设定则很难改变，只能新设key值进行同节点存储，但这不仅带来数据的冗余存储，也需要改动原有key值数据的存储逻辑（需保证一份数据在多key存储时的事务属性，但这又回到了最开始的单次操作多keys的场景）。</p>
+<p>本质上的解决方案，只能是避免使用“单次操作多key”的命令，化整为零，确保单次操作单key。</p>
+<h1 id="四-集群核心数据结构"><a href="#四-集群核心数据结构" class="headerlink" title="四. 集群核心数据结构"></a>四. 集群核心数据结构</h1><p>为支持<strong>cluster</strong>模式的各项功能，Redis主要设计了3种结构体，分别跟踪记录不同层面的数据：clusterState记录整个集群的状态数据；clusterNode对应单个节点角色；clusterLink跟踪各个节点之间的内部通信。</p>
+<p>这3种结构共同组成了一副有层次的树状结构，记录了“本节点”对集群当前状态的理解。每个节点各自均有这样一颗“树”，并通过内部通信，采用gossip方式频繁交换各自对集群状态的理解，从而达到协同工作的目的。</p>
+<h2 id="4-1-clusterState"><a href="#4-1-clusterState" class="headerlink" title="4.1 clusterState"></a>4.1 <strong>clusterState</strong></h2><p>Redis进程内只存在一个clusterState成员，从本机视角记录自己对整个集群状态的认知理解。</p>
+<p>clusterState的各个字段与功能可参考下图：</p>
+<p><img src="/images/2020/clusterState.png" alt="clusterState"></p>
+<h2 id="4-2-clusterNode"><a href="#4-2-clusterNode" class="headerlink" title="4.2 clusterNode"></a>4.2 <strong>clusterNode</strong></h2><p>clusterNode结构体对应着节点层面，从本机视角跟踪集群里每个主备节点。集群稳定（不涉及增减节点、故障切换等）情况下，集群N个主备节点，那么本机Redis进程中就存在N个clusterNode结构体与之对应（这N中也包含自身）。</p>
+<p>clusterNode中记录着诸多关键信息，例如：节点ID，主备角色、节点负责的slot区间等。集群内部通信交换的数据多数来自于clusterNode里记录的信息。</p>
+<p>clusterNode的各个字段与功能可参考下图：</p>
+<p><img src="/images/2020/clusterNode.png" alt="clusterNode"></p>
+<h2 id="4-3-clusterLink"><a href="#4-3-clusterLink" class="headerlink" title="4.3 clusterLink"></a>4.3 <strong>clusterLink</strong></h2><p>既然涉及到集群内部数据交换，那么必然涉及到通信数据收发工作，而这正是由clusterLink负责。当然与上述2种结构体类似，也是基于本机视角记录着与集群其他各个主备节点的通信。</p>
+<p>在阅读源码时，需要特别留意这个数据结构的使用细节。在一个共有N个主备节点的集群中，在任意一个节点的本机视角来看，均有<code>2*(N-1)</code>个clusterLink结构体，即本机与其它任意一个节点，均有2个clusterLink结构体，分别用于：主动外呼与被动响应。二者功能上的差别主要体现在<code>clusterLink</code>里的<code>struct clusterNode *node</code>字段。“主动外呼-接收”通信所用clusterLink挂靠在接收方clusterNode结构体上，这两者直接通过指针互相指向对方。而“被动响应”通信所用的clusterLink则直接作为私有数据，挂靠在本机的核心事件分发器中，对应于<code>accept()</code>被动呼起的TCP套接字，该功能的”clusterLink.node”数值为**<em>NULL**</em>。</p>
+<p>本机与外部节点的TCP重连均会通过删除/创建“主动外呼-接收”功能的clusterLink结构体实现。而当本机发现之前<code>accept()</code>的套接字异常时，在<code>close()</code>该套接字的同时，也会同步删除“被动响应”功能的clusterLink结构体。两种功能虽然使用相同的数据结构，但是各自有独立的生命周期。</p>
+<p>clusterLink的各个字段与功能可参考下图：</p>
+<p><img src="/images/2020/clusterLink.png" alt="clusterLink"></p>
+<h1 id="五-各节点角色与职能"><a href="#五-各节点角色与职能" class="headerlink" title="五. 各节点角色与职能"></a>五. 各节点角色与职能</h1><p>集群中每个节点均有角色之分，主备角色只能二选一。每个新节点启动时，均默认为主节点角色，运维人员通过工具分配其角色：主节点会承担slot区间的数据存取工作；备节点接收其隶属主节点推送来的复制数据，自身不记录slot。</p>
+<p>主备角色除了在slot与复制两方面的差别之外，还有在故障迁移（failover）方面的差别。可以这么说，集群的自治理全权依赖于角色的差别。本章节汇总了主备角色的职能差别，具体细节可结合后续章节的讲解进行理解。</p>
+<p>只有集群里的主节点才能判定其他主备节点是否主观下线。只有备节点节点才能发起投票申请，请求替换本机所隶属于的、已处于客观下线的主节点。只有集群里的主节点才能对投票申请进行答复。</p>
+<h2 id="5-1-主节点"><a href="#5-1-主节点" class="headerlink" title="5.1 主节点"></a>5.1 主节点</h2><ul>
+<li>新节点启动时，均默认为主节点；</li>
+<li>主节点clusterNode结构体才存储着实际所负责的slot区间，而在集群层面clusterState结构体里跟踪每个slot所负责节点指针只会指向主节点；</li>
+<li>主节点承接用户的读写请求；</li>
+<li>主节点向辖内各个备节点推送复制数据；</li>
+<li>有资格判定集群其他主备节点客观下线（FAIL）；</li>
+<li>有资格向集群里所有主备节点广播fail类型的消息，告知集群：某节点已被本方客观下线（FAIL），接收方也会无条件的同步将其标记为客观下线（FAIL）；</li>
+<li>主节点可以发送ping/pong/fail/update/failover-auth-ack消息；</li>
+<li>主节点不能发送failover-auth-request消息；</li>
+<li>对收到的其他备节点的投票申请（failover-auth-request）确认投票（failover-auth-ack），每轮申请只有一次投票权；</li>
+<li>已被标记为客观下线（FAIL）的节点，如果以主节点角色恢复正常（即主节点摘掉FAIL标记），需满足极为苛刻的条件：该主节点仍然负责某些slot槽位，并且FAIL至目前的时长超过2*nodetime）；</li>
+</ul>
+<h2 id="5-2-备节点"><a href="#5-2-备节点" class="headerlink" title="5.2 备节点"></a>5.2 备节点</h2><ul>
+<li>备节点不记录slot槽位，slot-&gt;node的映射关系也不会记录备节点；</li>
+<li>默认情况下，只承接主节点的复制数据，不承接用户的写操作指令（配置开启写功能的备节点除外）；</li>
+<li>备节点可以发送ping/pong/update/failover-auth-request消息;</li>
+<li>备节点不能发送failover-auth-ack消息；</li>
+<li>在自动故障迁移时，备节点只能替换当前所隶属于的主节点；</li>
+<li>满足一定条件的备节点可以自动漂移至集群其他主节点名下，该机制可以避免出现孤儿主节点，保证集群高可用；</li>
+</ul>
+<h1 id="六-集群"><a href="#六-集群" class="headerlink" title="六. 集群"></a>六. 集群</h1><h2 id="6-1-分裂"><a href="#6-1-分裂" class="headerlink" title="6.1 分裂"></a>6.1 分裂</h2><p>各个节点依据一定的配置组织成一个整体，对外提供集群服务。而在实际运行中，集群会遇到周边环境引发的各种异常，集群的自动应对机制至关重要。</p>
+<p>有一种情况比较特殊，即集群分裂，之前提过，cluster</p>
+<h2 id="6-2-集群裂后恢复"><a href="#6-2-集群裂后恢复" class="headerlink" title="6.2 集群裂后恢复"></a>6.2 集群裂后恢复</h2><p>待写</p>
+<h1 id="七-节点之间通信方式"><a href="#七-节点之间通信方式" class="headerlink" title="七. 节点之间通信方式"></a>七. 节点之间通信方式</h1><p>集群内部的通信使用专用端口号bus-port，默认情况是<code>10000 + Redis面向用户服务端口号</code>，例如：Redis面向用户的端口号为6349，那么集群内部专用端口号为16349。</p>
+<p>另外，为了应对Docker等部署环境的网络特点，Redis特别提供了如下3个配置参数，通过静态配置明确指定地址信息，专用于集群内部通信使用。</p>
+<figure class="highlight shell"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line"><span class="meta">#</span><span class="bash">静态设置本机在集群内部的联系IP地址。</span></span><br><span class="line">cluster-announce-ip 10.1.1.5</span><br><span class="line"></span><br><span class="line"><span class="meta">#</span><span class="bash">静态设置本机在集群内部的主备复制所用的端口号。</span></span><br><span class="line">cluster-announce-port 6379</span><br><span class="line"></span><br><span class="line"><span class="meta">#</span><span class="bash">静态设置本机在集群内部各主备节点之间的通信端口号。</span></span><br><span class="line">cluster-announce-bus-port 6380</span><br></pre></td></tr></table></figure>
+
+<h2 id="7-1-主-主"><a href="#7-1-主-主" class="headerlink" title="7.1 主-主"></a>7.1 主-主</h2><p>主-主之间通信只用于交换集群状态数据，使用bus-port作为监听端口。每对主节点之间有2条TCP连接，对应两个不同的clusterLink结构体。</p>
+<h2 id="7-2-主-备"><a href="#7-2-主-备" class="headerlink" title="7.2 主-备"></a>7.2 主-备</h2><p>主-备之间的通信会根据功能划分，使用不同的监听端口。</p>
+<ul>
+<li><p>交换集群状态数据</p>
+<p>使用bus-port作为监听端口，每对主备节点之间有2条TCP连接。</p>
+</li>
+<li><p>复制数据</p>
+<p>使用port作为监听端口，每对主备节点之间有1条TCP连接。</p>
+</li>
+</ul>
+<h1 id="八-内部通信协议"><a href="#八-内部通信协议" class="headerlink" title="八. 内部通信协议"></a>八. 内部通信协议</h1><h2 id="8-1-ping消息"><a href="#8-1-ping消息" class="headerlink" title="8.1 ping消息"></a>8.1 <strong>ping</strong>消息</h2><p><img src="/image/cluster_ping.png" alt="ping"></p>
+<p>周期性的对集群节点主动发送ping消息，通过在指定时间内能否收到pong响应，以检测对方是否主观下线。另外ping消息同时携带着发送方本机视角记录的集群数据，接收方接收后，据此更新自身记录的集群数据。</p>
+<p>主备节点均可发送ping消息，收到ping消息的接收方必须回复pong消息，否则会被发送方判定主观下线。</p>
+<h2 id="8-2-meet消息"><a href="#8-2-meet消息" class="headerlink" title="8.2 meet消息"></a>8.2 <strong>meet</strong>消息</h2><p><img src="/images/cluster_meet.png" alt="meet"></p>
+<p>meet消息与ping消息整体结构一致，两者除了消息类别填充值不同之外，还在于集群节点如何处理陌生节点发来的消息。这里所说的陌生节点，是指接收方未见过该节点ID。</p>
+<ul>
+<li>陌生节点发来的ping消息，接收方不予采信，但是会回复正常的pong消息。</li>
+<li>陌生节点发来的meet消息，接收方则会正常解析并更新本机数据，也会将此陌生节点加入到集群中，并回复正常的pong消息。</li>
+</ul>
+<p>新节点（无论主备角色）在加入集群阶段才会发送meet消息，该消息一般是由运维工具触发。新节点只需向集群中的某一节点发送一条meet消息即可，余下会由接收方利用gossip机制在集群内部逐步扩散该新节点信息。</p>
+<h2 id="8-3-pong消息"><a href="#8-3-pong消息" class="headerlink" title="8.3 pong消息"></a>8.3 <strong>pong</strong>消息</h2><p><img src="/images/cluster_pong.png" alt="pong"></p>
+<p>pong消息与ping消息整体结构一致，两者的差别除了消息类别字段值为pong之外，还在于接收方如何回复。</p>
+<ul>
+<li>收到ping消息，必须回复pong消息；</li>
+<li>收到pong消息，无需回复任何消息；</li>
+</ul>
+<p>pong消息有两种使用场景：</p>
+<ul>
+<li><p>被动式</p>
+<p>节点在收到ping消息时，以pong消息应答对方，pong消息也会携带本机视角记录的集群状态数据，以达到交互数据的目的。</p>
+</li>
+<li><p>主动式</p>
+<p>pong消息作为首发消息，只出现在故障切换场景下：</p>
+<ol>
+<li><p>在故障切换阶段，每一轮新的选举申请发送前，备节点将自己的复制偏移量以pong消息发送给本节点所隶属的主节点名下所有备节点（不包含发送方自身）;</p>
+</li>
+<li><p>在故障切换完毕时, 最终成功当选为主节点的备节点以pong消息向集群内所有节点广播自身记录的集群数据；</p>
+</li>
+</ol>
+<p>主动式的pong消息，用于“广播”场景，可让集群里的部分节点尽快更新状态，而接收方也无需回复任何消息。</p>
+</li>
+</ul>
+<h2 id="8-4-fail消息"><a href="#8-4-fail消息" class="headerlink" title="8.4 fail消息"></a>8.4 <strong>fail</strong>消息</h2><p><img src="/images/cluster_fail.png" alt="fail"></p>
+<p>主节点基于本机视角的数据，一旦判定目标节点（集群内其他任意节点）为客观下线，那么就会向集群广播fail消息，周知所有接收方将本机视角的目标节点也置为客观下线。</p>
+<h2 id="8-5-update消息"><a href="#8-5-update消息" class="headerlink" title="8.5 update消息"></a>8.5 <strong>update</strong>消息</h2><p>![update]</p>
+<p>update消息里携带的载体数据是发送方记录的某个目标主节点以及所负责槽位信息。接收方一旦收到update类型的消息，需要据此更新本机视角里节点角色与slot-node相互映射关系。</p>
+<p>update消息只会发生在收到心跳消息（ping/pong/meet）之后，*<strong>心跳消息的接收方</strong>在解析时，发现对方记录的槽位映射已过时，会向*<strong>心跳消息的发送方</strong>主动发送update消息，*<strong>update消息接收方</strong>需要据此更新本机视角的数据。</p>
+<h2 id="8-6-failover-auth-request消息"><a href="#8-6-failover-auth-request消息" class="headerlink" title="8.6 failover-auth-request消息"></a>8.6 <strong>failover-auth-request</strong>消息</h2><p>备节点一旦发现所隶属于的主节点处于主观下线状态后，就会向集群里的其他主节点发送failover-auth-request消息进行投票申请。</p>
+<p>该消息只用于故障切换阶段，且发送方为备节点，接收方为主节点。</p>
+<h2 id="8-7-failover-auth-ack消息"><a href="#8-7-failover-auth-ack消息" class="headerlink" title="8.7 failover-auth-ack消息"></a>8.7 <strong>failover-auth-ack</strong>消息</h2><p>集群里的主节点在收到failover-auth-request消息后，在经过一些验证工作后，如果认可对方可以当选，那么会向对方发送failover-auth-ack消息，投出自己宝贵的一票。每一轮选举工作，每个主节点只能投一票。</p>
+<h1 id="九-自动应对节点异常"><a href="#九-自动应对节点异常" class="headerlink" title="九. 自动应对节点异常"></a>九. 自动应对节点异常</h1><p>集群模式支持自我检测与恢复的能力，采用的核心机制就是：心跳检测 + 投票。</p>
+<h2 id="9-1-侦测机制"><a href="#9-1-侦测机制" class="headerlink" title="9.1 侦测机制"></a>9.1 侦测机制</h2><p>侦测机制主要使用的是心跳检测，节点会向集群里的所有节点周期性的主动发送ping消息，根据能否收到pong消息，判断对方是否正常。</p>
+<p>心跳检测方案要尽可能减少网络波动的干扰，另外也需要保证高效，避免内部通信存在过量心跳信息。</p>
+<ul>
+<li><p>每100ms遍历本机视角的所有处于握手中的节点，如果超过<code>min(server.cluster_node_timeout, 1秒)</code>时长依旧未结束握手，则认为该节点不可达，直接删除本机视角里关于该节点的所有信息。</p>
+</li>
+<li><p>每秒选取集群中的一个节点向其主动发送ping消息，选取方式是基于本机视角节点数据，随机采样5个节点，从中选择一个最久没有向其发过ping消息的节点。</p>
+</li>
+<li><p>每100ms遍历本机视角的所有节点，如果发现某节点未回复pong消息的时长处于<code>[server.cluster_node_timeout/2, server.cluster_node_timeout)</code>区间，本节点主动断开<code>主动外呼</code>的TCP连接，后续重新连接，通过重连的方式尽量减少网络波动引发的消息不可达现象。</p>
+</li>
+<li><p>每100ms遍历本机视角的所有节点，如果发现未向其主动发送ping消息的时长超过<code>server.cluster_node_timeout/2</code>，则立即发送ping消息。</p>
+</li>
+<li><p>每100ms遍历本机视角的所有节点，如果发现某节点未回复pong消息的时长超过<code>server.cluster_node_timeout</code>，则判定该节点处于PFAIL主观下线。</p>
+</li>
+<li><p>每<code>1000/server.hz</code>毫秒，节点均会基于本机视角的数据，统计负责至少1个slot的主节点数目，如果发现其中有超过半数的主节点处于主观下线或者是客观下线，那么就评判集群整体状态FAIL，否则集群为OK。</p>
+</li>
+</ul>
+<h2 id="9-2-PFAIL主观下线"><a href="#9-2-PFAIL主观下线" class="headerlink" title="9.2 PFAIL主观下线"></a>9.2 <strong>PFAIL</strong>主观下线</h2><p>主观下线是通过心跳机制进行判定。基于上述提到的侦测机制，如果一个已知节点超过<code>server.cluster_node_timeout</code>时长未回复pong消息，那么本机将其判定为PFAIL。正如字面含义，主观下线是节点基于本机视角做出的初步判定，里面可能有网络干扰因素影响。</p>
+<h2 id="9-3-FAIL客观下线"><a href="#9-3-FAIL客观下线" class="headerlink" title="9.3 FAIL客观下线"></a>9.3 <strong>FAIL</strong>客观下线</h2><p>集群里如果多数主节点都判定某个节点为PFAIL主观下线的话，那么就需要将该节点的状态由PFAIL主观下线升级到FAIL客观下线。而客观下线会引发后续一连串的集群自我修复工作，所以这项判定需要十分谨慎，而一旦判定为客观下线，那么需要迅速通知集群里个各个节点，以便确认是否开启故障切换工作。</p>
+<p>Redis是如何实现完成这个判定过程呢？主要分为两个阶段：</p>
+<ol>
+<li><p>积累阶段（主备节点均有该阶段）</p>
+<ul>
+<li>本机视角里均会记录集群里每个节点的被主节点投诉的信息。这些投诉信息来自于<code>主节点</code>发送的ping/pong/meet消息里的载体数据，一旦发现消息载体里某个目标节点处于FAIL或者PFAIL，那么就会在本机视角的该目标节点下面记录一笔：消息发送方作为投诉方，投诉信息是以链表形式挂载在被投诉的节点下。<figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment">// 投诉信息结构体</span></span><br><span class="line"><span class="class"><span class="keyword">struct</span> <span class="title">clusterNodeFailReport</span> &#123;</span></span><br><span class="line">  <span class="comment">// 消息发送方，即投诉方，同时也为主节点角色</span></span><br><span class="line">  <span class="class"><span class="keyword">struct</span> <span class="title">clusterNode</span> *<span class="title">node</span>;</span>  <span class="comment">/* Node reporting the failure condition. */</span></span><br><span class="line">  <span class="comment">// 投诉时间戳</span></span><br><span class="line">  <span class="keyword">mstime_t</span> time;             <span class="comment">/* Time of the last report from this node. */</span></span><br><span class="line">&#125; clusterNodeFailReport;</span><br></pre></td></tr></table></figure>
+
+</li>
+</ul>
+<p>投诉信息也有时效，超过<code>2 * server.cluster_node_timeout</code>的投诉信息会被自动删除。另外针对同一个目标节点，投诉方只能投诉一次，重复投诉只会更新时间戳。</p>
+<ul>
+<li>本机视角会统计目标节点的被投诉次数，当发现该目标节点被集群内超半数主节点投诉，并且本机视角也将该目标节点置为主观下线，那么就会在本机视角里将该目标节点状态置为客观下线。</li>
+</ul>
+</li>
+<li><p>广播阶段（只有主节点有资格）</p>
+<p>主节点一旦判定目标节点为FAIL客观下线后，需要立即向集群广播fail类型消息，周知该目标节点已客观下线。接收方一旦收到fail类型的消息，会同步将目标节点直接置为FAIL客观下线。通过fail消息，快速通知集群所有节点。</p>
+</li>
+</ol>
+<h2 id="9-4-异常节点恢复"><a href="#9-4-异常节点恢复" class="headerlink" title="9.4 异常节点恢复"></a>9.4 异常节点恢复</h2><p>集群中的节点一旦处于主观下线或者客观下线状态，在网络恢复或者运维人员介入修复重启后，自身会利用心跳机制自动恢复正常状态。</p>
+<p>本机视角里会一直对PFAIL状态的已知节点进行侦测：<code>connect()</code>重连。节点一旦恢复在线，双方都会主动互发ping消息。收到ping消息后，使用消息内的集群纪元对比本机视角的集群纪元，对数值小的ping消息不予采信。通过这样的方式可以让恢复的节点尽快更新本机视角的数据。双方也会互回pong消息完成一个心跳来回。</p>
+<p>恢复过程因PFAIL/FAIL不同而有恢复时长上的区别，策略如下：</p>
+<ul>
+<li><p>PFAIL主观下线节点恢复</p>
+<p>收到之前处于PFAIL状态的节点回复的pong消息后，会立即更新本机视角数据，取消其PFAIL标记，即刻恢复正常。</p>
+</li>
+<li><p>FAIL客观下线节点恢复</p>
+<p>收到之前处于FAIL状态的节点回复pong消息后，则会根据本机视角里该恢复节点的主备角色不同，进行不同的时效处理：</p>
+<ul>
+<li><p>如果该恢复节点是备节点，或者 已不承担任何槽位的主节点，取消其FAIL标记，即刻恢复正常。</p>
+</li>
+<li><p>如果该恢复节点是仍承担槽位的主节点，则延迟处理，直至当前时间距离之前标记为FAIL标记的时长已超过<code>2 * server.cluster_node_timeout</code>，才可去掉FAIL标记。</p>
+</li>
+</ul>
+</li>
+</ul>
+<h1 id="十-故障切换机制"><a href="#十-故障切换机制" class="headerlink" title="十. 故障切换机制"></a>十. 故障切换机制</h1><p>待写</p>
+<h1 id="十一-自动漂移机制"><a href="#十一-自动漂移机制" class="headerlink" title="十一. 自动漂移机制"></a>十一. 自动漂移机制</h1><p>集群孤儿主节点的存在，极大的威胁服务的可用性。如果孤儿主节点被客观下线，而且配置参数<code>cluster-require-full-coverage</code>置为<code>no</code>，那么集群拒绝执行用户任何命令。Redis支持自动漂移机制，来避免集群出现孤儿主节点。</p>
+<p>该机制通过主动检测是否存在孤儿主节点，并在集群处于正常状态时，主动将其他子集群的备节点漂移到孤儿主节点名下，以达到集群的高可用性。</p>
+<p>每个节点均基于本机视角记录的集群整体信息为准，遍历每个主节点，如果发现存在孤儿主节点，这说明集群里需要进行备节点自动漂移。那么最终会选取哪个备节点漂移至孤儿主节点下面呢？其实集群内的每个备节点都会进行检测，当发现自己所在的子集群是集群中含有最多备节点的子集群时，那么这个备节点就会尝试漂移。</p>
+<p>首先，每个备节点基于本机视角的数据，再次遍历所有主节点，找到第一个孤儿主节点，这个就被作为本次漂移的目的地主节点。之后，备节点基于本机视角的数据，确认自己是否满足如下条件：</p>
+<ol>
+<li><p>自己所隶属于的主节点名下含有集群里数目最多的备节点；</p>
+</li>
+<li><p>自己的节点ID字母序最小；</p>
+</li>
+</ol>
+<p>同时满足上述条件的备节点，则就开启自动漂移过程，主动漂移至目的地孤儿主节点名下。</p>
+<p>这里需要留意，条件1中，有可能出现每个非孤儿主节点名下只有1个备节点，这种情况下导致集群里的备节点一直自动四处漂移。为避免该情况，Redis提供了一个配置参数：cluster_migration_barrier自动漂移屏障，确保备节点漂移到<code>孤儿主节点</code>后，源主节点留有指定个数的备节点，否则不允许迁移。</p>
+<h1 id="十二-槽位迁移的运行机制"><a href="#十二-槽位迁移的运行机制" class="headerlink" title="十二. 槽位迁移的运行机制"></a>十二. 槽位迁移的运行机制</h1><h2 id="12-1-ask"><a href="#12-1-ask" class="headerlink" title="12.1 ask"></a>12.1 <strong>ask</strong></h2><p>待写</p>
+<h2 id="12-2moved"><a href="#12-2moved" class="headerlink" title="12.2moved"></a>12.2<strong>moved</strong></h2><p>待写</p>
+<h1 id="十三-Redis的几处值得借鉴的编程小技巧"><a href="#十三-Redis的几处值得借鉴的编程小技巧" class="headerlink" title="十三. Redis的几处值得借鉴的编程小技巧"></a>十三. Redis的几处值得借鉴的编程小技巧</h1><h2 id="13-1-原子性覆盖写文件"><a href="#13-1-原子性覆盖写文件" class="headerlink" title="13.1 原子性覆盖写文件"></a>13.1 原子性覆盖写文件</h2><p>Redis cluster集群模式下，本机视角的集群数据会周期性的保存到磁盘上，以确保本节点重启时可自动回归集群。本机视角的集群数据较多，每次数据长度长短不一，但又十分敏感，在落盘时尽量避免“部分写成功”的问题，尽可能一次性写入完整数据，保证原子性。</p>
+<p>Redis采用的方式是：构造待写入数据时填充足够多的<code>\n</code>回车符，确保可以完整覆盖式写文件，之后再截断文件，只保留有效数据。如果发现存在“部分写成功”现象，进程直接退出。</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br><span class="line">36</span><br><span class="line">37</span><br></pre></td><td class="code"><pre><span class="line">......（省略）.......</span><br><span class="line"><span class="comment">// 构造新的本机视角集群数据 </span></span><br><span class="line">ci = clusterGenNodesDescription(CLUSTER_NODE_HANDSHAKE);</span><br><span class="line"></span><br><span class="line"><span class="comment">// 计算本次待写入的数据的字节数</span></span><br><span class="line">content_size = sdslen(ci);</span><br><span class="line"></span><br><span class="line"><span class="comment">// 获取本地`cluster.conf`文件句柄</span></span><br><span class="line"><span class="keyword">if</span> ((fd = open(server.cluster_configfile,O_WRONLY|O_CREAT,<span class="number">0644</span>))</span><br><span class="line">    == <span class="number">-1</span>) <span class="keyword">goto</span> err;</span><br><span class="line"></span><br><span class="line"><span class="comment">// ！！重点，保证原子性写入的关键！！</span></span><br><span class="line"><span class="comment">/**</span></span><br><span class="line"><span class="comment"> * 如字节数不足，则以无害的\n符号填充待写数据</span></span><br><span class="line"><span class="comment"> * 确保本次待写入的数据字节数要超过文件内已有字节数，以完整覆盖旧数据。</span></span><br><span class="line"><span class="comment"> */</span> </span><br><span class="line"><span class="keyword">if</span> (fstat(fd,&amp;sb) != <span class="number">-1</span>) &#123;</span><br><span class="line">    <span class="keyword">if</span> (sb.st_size &gt; (<span class="keyword">off_t</span>)content_size) &#123;</span><br><span class="line">        <span class="comment">// 为确保单次write全部覆盖旧数据,</span></span><br><span class="line">        ci = sdsgrowzero(ci,sb.st_size);</span><br><span class="line">        <span class="comment">// 将新数据尾部填充回车符</span></span><br><span class="line">        <span class="built_in">memset</span>(ci+content_size,<span class="string">&#x27;\n&#x27;</span>,sb.st_size-content_size);</span><br><span class="line">    &#125;</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="comment">// 写数据</span></span><br><span class="line"><span class="keyword">if</span> (write(fd,ci,sdslen(ci)) != (<span class="keyword">ssize_t</span>)sdslen(ci)) <span class="keyword">goto</span> err;</span><br><span class="line"></span><br><span class="line">......（省略）.......</span><br><span class="line"></span><br><span class="line"><span class="comment">// 执行文件截断操作，将尾部填充的多余回车符数据删除，确保文件保存的是真实配置数据</span></span><br><span class="line"><span class="keyword">if</span> (content_size != sdslen(ci) &amp;&amp; ftruncate(fd,content_size) == <span class="number">-1</span>) &#123;</span><br><span class="line">    <span class="comment">// 此处失败也是无损的</span></span><br><span class="line">&#125;</span><br><span class="line">close(fd);</span><br><span class="line"></span><br><span class="line">......（省略）.......</span><br></pre></td></tr></table></figure>
+
+<h2 id="13-2-IPv4-IPv6通用解析方式"><a href="#13-2-IPv4-IPv6通用解析方式" class="headerlink" title="13.2 IPv4/IPv6通用解析方式"></a>13.2 <strong>IPv4/IPv6</strong>通用解析方式</h2><p>随着IPv6的普及，越来越多的服务需要在代码层面支持IPv4/IPv6的双支持。那么如何依据一个套接字句柄，获得发送方的既可能是IPv4又可能是IPv6的IP地址呢？可以参考Redis里如下代码</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment">/**</span></span><br><span class="line"><span class="comment"> * 获取socket句柄对应的远端地址，并将其转为点分式文本型数据保存到ip与port中</span></span><br><span class="line"><span class="comment"> */</span></span><br><span class="line"><span class="function"><span class="keyword">int</span> <span class="title">anetPeerToString</span><span class="params">(<span class="keyword">int</span> fd, <span class="keyword">char</span> *ip, <span class="keyword">size_t</span> ip_len, <span class="keyword">int</span> *port)</span> </span>&#123;</span><br><span class="line">    <span class="class"><span class="keyword">struct</span> <span class="title">sockaddr_storage</span> <span class="title">sa</span>;</span> <span class="comment">// 通用网络地址，足够存储各种类型的地址数据</span></span><br><span class="line">    <span class="keyword">socklen_t</span> salen = <span class="keyword">sizeof</span>(sa);</span><br><span class="line"></span><br><span class="line">    <span class="comment">// 依据socket句柄获得对端网络地址</span></span><br><span class="line">    <span class="keyword">if</span> (getpeername(fd,(struct sockaddr*)&amp;sa,&amp;salen) == <span class="number">-1</span>) <span class="keyword">goto</span> error;</span><br><span class="line">    <span class="keyword">if</span> (ip_len == <span class="number">0</span>) <span class="keyword">goto</span> error;</span><br><span class="line">    </span><br><span class="line">    <span class="comment">// 依据地址类别将其网络地址转为字符串</span></span><br><span class="line">    <span class="keyword">if</span> (sa.ss_family == AF_INET) &#123;</span><br><span class="line">        <span class="comment">// ipv4</span></span><br><span class="line">        <span class="class"><span class="keyword">struct</span> <span class="title">sockaddr_in</span> *<span class="title">s</span> = (<span class="title">struct</span> <span class="title">sockaddr_in</span> *)&amp;<span class="title">sa</span>;</span></span><br><span class="line">        <span class="keyword">if</span> (ip) inet_ntop(AF_INET,(<span class="keyword">void</span>*)&amp;(s-&gt;sin_addr),ip,ip_len);</span><br><span class="line">        <span class="keyword">if</span> (port) *port = ntohs(s-&gt;sin_port);</span><br><span class="line">    &#125; <span class="keyword">else</span> <span class="keyword">if</span> (sa.ss_family == AF_INET6) &#123;</span><br><span class="line">        <span class="comment">// ipv6</span></span><br><span class="line">        struct sockaddr_in6 *s = (struct sockaddr_in6 *)&amp;sa;</span><br><span class="line">        <span class="keyword">if</span> (ip) inet_ntop(AF_INET6,(<span class="keyword">void</span>*)&amp;(s-&gt;sin6_addr),ip,ip_len);</span><br><span class="line">        <span class="keyword">if</span> (port) *port = ntohs(s-&gt;sin6_port);</span><br><span class="line">    &#125; <span class="keyword">else</span> <span class="keyword">if</span> (sa.ss_family == AF_UNIX) &#123;</span><br><span class="line">        <span class="comment">// 本地域</span></span><br><span class="line">        <span class="keyword">if</span> (ip) <span class="built_in">strncpy</span>(ip,<span class="string">&quot;/unixsocket&quot;</span>,ip_len);</span><br><span class="line">        <span class="keyword">if</span> (port) *port = <span class="number">0</span>;</span><br><span class="line">    &#125; <span class="keyword">else</span> &#123;</span><br><span class="line">        <span class="keyword">goto</span> error;</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="keyword">return</span> <span class="number">0</span>;</span><br></pre></td></tr></table></figure>
+
+<h2 id="13-4-避免accept-引起阻塞"><a href="#13-4-避免accept-引起阻塞" class="headerlink" title="13.4 避免accept()引起阻塞"></a>13.4 避免<code>accept()</code>引起阻塞</h2><p>集群内部通信有专用端口号，通过监听该端口，建立内部的TCP传输通道。而网络异常可能发生在任何时刻，也可能发生在<code>accept()</code>阶段。可能有人要问，Redis核心使用了Reactor模式，只有当内核协议栈有完成TCP三次握手的新连接后，该监听套接字才会被回调执行<code>accept()</code>，此时<code>accept()</code>一定能成功获得一个新连接，怎么会阻塞呢？</p>
+<p>其实进程阻塞在<code>accept()</code>函数是有一定几率发生的。该情况也在《UNP》<span style="color:red;">[5]</span>里的非阻塞式<code>accept()</code>有说明。这里我们直接说解决方案：将监听套接字置为Non-Block，并且特别处理<code>accept()</code>函数返回-1时且errno为<code>EWOULDBLOCK</code>的场景，该场景表示本次<code>accept()</code>失败是因为当前内核协议栈没有可用的新连接导致，可以将其当做正常情况，无需作为错误对待。</p>
+<p>除此之外，为应对某时刻突发大量TCP新连接可用，导致进程长时间循环处理<code>accept()</code>功能，Redis设置了单轮<code>accept()</code>新套接字上限阈值1000，即每轮至多调用<code>accept()</code>至多1000次，超过此值后中止本轮，进程继续执行其他任务，而那些已完成的TCP连接会被继续留在内核协议栈内，待下一轮的<code>accept()</code>处理。</p>
+<p><img src="https://note.youdao.com/yws/public/resource/aec7551a5c35e3ea8d776bbbb3488382/xmlnote/WEBRESOURCE5038f49e4076528144efa5480a060416/19305"></p>
+<p><strong><em>参考资料</em></strong></p>
+<ol>
+<li><a target="_blank" rel="noopener" href="https://redis.io/topics/cluster-tutorial">https://redis.io/topics/cluster-tutorial</a></li>
+<li><a target="_blank" rel="noopener" href="https://redis.io/topics/cluster-spec">https://redis.io/topics/cluster-spec</a></li>
+<li><a target="_blank" rel="noopener" href="https://blog.opstree.com/2019/10/22/redis-cluster-architecture-replication-sharding-and-failover/">https://blog.opstree.com/2019/10/22/redis-cluster-architecture-replication-sharding-and-failover/</a></li>
+<li><a target="_blank" rel="noopener" href="https://seanmcgary.com/posts/how-to-build-a-fault-tolerant-redis-cluster-with-sentinel/">https://seanmcgary.com/posts/how-to-build-a-fault-tolerant-redis-cluster-with-sentinel/</a></li>
+<li>UNIX Network Programming</li>
+</ol>
+
+    </div>
+
+    
+    
+    
+
+      <footer class="post-footer">
+          <div class="post-tags">
+              <a href="/tags/Redis/" rel="tag"># Redis</a>
+              <a href="/tags/C/" rel="tag"># C</a>
+              <a href="/tags/Redis-Cluster/" rel="tag"># Redis Cluster</a>
+          </div>
+
+        
+
+
+        
+    <div class="post-nav">
+      <div class="post-nav-item">
+    <a href="/2020/03/13/2020/2020-03-13-Redis%E9%AB%98%E6%80%A7%E8%83%BD%E5%8E%9F%E5%9B%A0%E5%88%86%E6%9E%90/" rel="prev" title="Redis高性能原因分析">
+      <i class="fa fa-chevron-left"></i> Redis高性能原因分析
+    </a></div>
+      <div class="post-nav-item">
+    <a href="/2020/06/10/2020/2020-06-09-Redis-skiplist%E7%BB%93%E6%9E%84%E5%9B%BE/" rel="next" title="Redis skiplist结构图">
+      Redis skiplist结构图 <i class="fa fa-chevron-right"></i>
+    </a></div>
+    </div>
+      </footer>
+    
+  </article>
+  
+  
+  
+
+
+
+          </div>
+          
+
+<script>
+  window.addEventListener('tabs:register', () => {
+    let { activeClass } = CONFIG.comments;
+    if (CONFIG.comments.storage) {
+      activeClass = localStorage.getItem('comments_active') || activeClass;
+    }
+    if (activeClass) {
+      let activeTab = document.querySelector(`a[href="#comment-${activeClass}"]`);
+      if (activeTab) {
+        activeTab.click();
+      }
+    }
+  });
+  if (CONFIG.comments.storage) {
+    window.addEventListener('tabs:click', event => {
+      if (!event.target.matches('.tabs-comment .tab-content .tab-pane')) return;
+      let commentClass = event.target.classList[1];
+      localStorage.setItem('comments_active', commentClass);
+    });
+  }
+</script>
+
+        </div>
+          
+  
+  <div class="toggle sidebar-toggle">
+    <span class="toggle-line toggle-line-first"></span>
+    <span class="toggle-line toggle-line-middle"></span>
+    <span class="toggle-line toggle-line-last"></span>
+  </div>
+
+  <aside class="sidebar">
+    <div class="sidebar-inner">
+
+      <ul class="sidebar-nav motion-element">
+        <li class="sidebar-nav-toc">
+          文章目录
+        </li>
+        <li class="sidebar-nav-overview">
+          站点概览
+        </li>
+      </ul>
+
+      <!--noindex-->
+      <div class="post-toc-wrap sidebar-panel">
+          <div class="post-toc motion-element"><ol class="nav"><li class="nav-item nav-level-1"><a class="nav-link" href="#%E4%B8%80-Redis%E9%9B%86%E7%BE%A4%E6%96%B9%E5%BC%8F"><span class="nav-text">一. Redis集群方式</span></a></li><li class="nav-item nav-level-1"><a class="nav-link" href="#%E4%BA%8C-%E6%9C%AF%E8%AF%AD"><span class="nav-text">二. 术语</span></a></li><li class="nav-item nav-level-1"><a class="nav-link" href="#%E4%B8%89-%E6%A7%BD%E4%BD%8D"><span class="nav-text">三. 槽位</span></a><ol class="nav-child"><li class="nav-item nav-level-2"><a class="nav-link" href="#3-1-%E6%A7%BD%E4%BD%8D%E4%B8%8E%E6%95%B0%E6%8D%AE%E7%9A%84%E5%85%B3%E7%B3%BB"><span class="nav-text">3.1 槽位与数据的关系</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#3-2-%E6%A7%BD%E4%BD%8D%E4%B8%8E%E8%8A%82%E7%82%B9%E7%9A%84%E5%85%B3%E7%B3%BB"><span class="nav-text">3.2 槽位与节点的关系</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#3-3-%E5%A6%82%E4%BD%95%E5%B0%86%E4%B8%8D%E5%90%8C%E7%9A%84key%E4%BF%9D%E5%AD%98%E5%88%B0%E4%B8%80%E4%B8%AA%E8%8A%82%E7%82%B9"><span class="nav-text">3.3 如何将不同的key保存到一个节点</span></a></li></ol></li><li class="nav-item nav-level-1"><a class="nav-link" href="#%E5%9B%9B-%E9%9B%86%E7%BE%A4%E6%A0%B8%E5%BF%83%E6%95%B0%E6%8D%AE%E7%BB%93%E6%9E%84"><span class="nav-text">四. 集群核心数据结构</span></a><ol class="nav-child"><li class="nav-item nav-level-2"><a class="nav-link" href="#4-1-clusterState"><span class="nav-text">4.1 clusterState</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#4-2-clusterNode"><span class="nav-text">4.2 clusterNode</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#4-3-clusterLink"><span class="nav-text">4.3 clusterLink</span></a></li></ol></li><li class="nav-item nav-level-1"><a class="nav-link" href="#%E4%BA%94-%E5%90%84%E8%8A%82%E7%82%B9%E8%A7%92%E8%89%B2%E4%B8%8E%E8%81%8C%E8%83%BD"><span class="nav-text">五. 各节点角色与职能</span></a><ol class="nav-child"><li class="nav-item nav-level-2"><a class="nav-link" href="#5-1-%E4%B8%BB%E8%8A%82%E7%82%B9"><span class="nav-text">5.1 主节点</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#5-2-%E5%A4%87%E8%8A%82%E7%82%B9"><span class="nav-text">5.2 备节点</span></a></li></ol></li><li class="nav-item nav-level-1"><a class="nav-link" href="#%E5%85%AD-%E9%9B%86%E7%BE%A4"><span class="nav-text">六. 集群</span></a><ol class="nav-child"><li class="nav-item nav-level-2"><a class="nav-link" href="#6-1-%E5%88%86%E8%A3%82"><span class="nav-text">6.1 分裂</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#6-2-%E9%9B%86%E7%BE%A4%E8%A3%82%E5%90%8E%E6%81%A2%E5%A4%8D"><span class="nav-text">6.2 集群裂后恢复</span></a></li></ol></li><li class="nav-item nav-level-1"><a class="nav-link" href="#%E4%B8%83-%E8%8A%82%E7%82%B9%E4%B9%8B%E9%97%B4%E9%80%9A%E4%BF%A1%E6%96%B9%E5%BC%8F"><span class="nav-text">七. 节点之间通信方式</span></a><ol class="nav-child"><li class="nav-item nav-level-2"><a class="nav-link" href="#7-1-%E4%B8%BB-%E4%B8%BB"><span class="nav-text">7.1 主-主</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#7-2-%E4%B8%BB-%E5%A4%87"><span class="nav-text">7.2 主-备</span></a></li></ol></li><li class="nav-item nav-level-1"><a class="nav-link" href="#%E5%85%AB-%E5%86%85%E9%83%A8%E9%80%9A%E4%BF%A1%E5%8D%8F%E8%AE%AE"><span class="nav-text">八. 内部通信协议</span></a><ol class="nav-child"><li class="nav-item nav-level-2"><a class="nav-link" href="#8-1-ping%E6%B6%88%E6%81%AF"><span class="nav-text">8.1 ping消息</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#8-2-meet%E6%B6%88%E6%81%AF"><span class="nav-text">8.2 meet消息</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#8-3-pong%E6%B6%88%E6%81%AF"><span class="nav-text">8.3 pong消息</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#8-4-fail%E6%B6%88%E6%81%AF"><span class="nav-text">8.4 fail消息</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#8-5-update%E6%B6%88%E6%81%AF"><span class="nav-text">8.5 update消息</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#8-6-failover-auth-request%E6%B6%88%E6%81%AF"><span class="nav-text">8.6 failover-auth-request消息</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#8-7-failover-auth-ack%E6%B6%88%E6%81%AF"><span class="nav-text">8.7 failover-auth-ack消息</span></a></li></ol></li><li class="nav-item nav-level-1"><a class="nav-link" href="#%E4%B9%9D-%E8%87%AA%E5%8A%A8%E5%BA%94%E5%AF%B9%E8%8A%82%E7%82%B9%E5%BC%82%E5%B8%B8"><span class="nav-text">九. 自动应对节点异常</span></a><ol class="nav-child"><li class="nav-item nav-level-2"><a class="nav-link" href="#9-1-%E4%BE%A6%E6%B5%8B%E6%9C%BA%E5%88%B6"><span class="nav-text">9.1 侦测机制</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#9-2-PFAIL%E4%B8%BB%E8%A7%82%E4%B8%8B%E7%BA%BF"><span class="nav-text">9.2 PFAIL主观下线</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#9-3-FAIL%E5%AE%A2%E8%A7%82%E4%B8%8B%E7%BA%BF"><span class="nav-text">9.3 FAIL客观下线</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#9-4-%E5%BC%82%E5%B8%B8%E8%8A%82%E7%82%B9%E6%81%A2%E5%A4%8D"><span class="nav-text">9.4 异常节点恢复</span></a></li></ol></li><li class="nav-item nav-level-1"><a class="nav-link" href="#%E5%8D%81-%E6%95%85%E9%9A%9C%E5%88%87%E6%8D%A2%E6%9C%BA%E5%88%B6"><span class="nav-text">十. 故障切换机制</span></a></li><li class="nav-item nav-level-1"><a class="nav-link" href="#%E5%8D%81%E4%B8%80-%E8%87%AA%E5%8A%A8%E6%BC%82%E7%A7%BB%E6%9C%BA%E5%88%B6"><span class="nav-text">十一. 自动漂移机制</span></a></li><li class="nav-item nav-level-1"><a class="nav-link" href="#%E5%8D%81%E4%BA%8C-%E6%A7%BD%E4%BD%8D%E8%BF%81%E7%A7%BB%E7%9A%84%E8%BF%90%E8%A1%8C%E6%9C%BA%E5%88%B6"><span class="nav-text">十二. 槽位迁移的运行机制</span></a><ol class="nav-child"><li class="nav-item nav-level-2"><a class="nav-link" href="#12-1-ask"><span class="nav-text">12.1 ask</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#12-2moved"><span class="nav-text">12.2moved</span></a></li></ol></li><li class="nav-item nav-level-1"><a class="nav-link" href="#%E5%8D%81%E4%B8%89-Redis%E7%9A%84%E5%87%A0%E5%A4%84%E5%80%BC%E5%BE%97%E5%80%9F%E9%89%B4%E7%9A%84%E7%BC%96%E7%A8%8B%E5%B0%8F%E6%8A%80%E5%B7%A7"><span class="nav-text">十三. Redis的几处值得借鉴的编程小技巧</span></a><ol class="nav-child"><li class="nav-item nav-level-2"><a class="nav-link" href="#13-1-%E5%8E%9F%E5%AD%90%E6%80%A7%E8%A6%86%E7%9B%96%E5%86%99%E6%96%87%E4%BB%B6"><span class="nav-text">13.1 原子性覆盖写文件</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#13-2-IPv4-IPv6%E9%80%9A%E7%94%A8%E8%A7%A3%E6%9E%90%E6%96%B9%E5%BC%8F"><span class="nav-text">13.2 IPv4&#x2F;IPv6通用解析方式</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#13-4-%E9%81%BF%E5%85%8Daccept-%E5%BC%95%E8%B5%B7%E9%98%BB%E5%A1%9E"><span class="nav-text">13.4 避免accept()引起阻塞</span></a></li></ol></li></ol></div>
+      </div>
+      <!--/noindex-->
+
+      <div class="site-overview-wrap sidebar-panel">
+        <div class="site-author motion-element" itemprop="author" itemscope itemtype="http://schema.org/Person">
+  <p class="site-author-name" itemprop="name">wapthen</p>
+  <div class="site-description" itemprop="description"></div>
+</div>
+<div class="site-state-wrap motion-element">
+  <nav class="site-state">
+      <div class="site-state-item site-state-posts">
+          <a href="/archives">
+          <span class="site-state-item-count">14</span>
+          <span class="site-state-item-name">日志</span>
+        </a>
+      </div>
+      <div class="site-state-item site-state-tags">
+            <a href="/tags/">
+          
+        <span class="site-state-item-count">8</span>
+        <span class="site-state-item-name">标签</span></a>
+      </div>
+  </nav>
+</div>
+  <div class="links-of-author motion-element">
+      <span class="links-of-author-item">
+        <a href="https://github.com/wapthen" title="GitHub → https:&#x2F;&#x2F;github.com&#x2F;wapthen" rel="noopener" target="_blank"><i class="fab fa-github fa-fw"></i>GitHub</a>
+      </span>
+      <span class="links-of-author-item">
+        <a href="mailto:wapthen@163.com" title="E-Mail → mailto:wapthen@163.com" rel="noopener" target="_blank"><i class="fa fa-envelope fa-fw"></i>E-Mail</a>
+      </span>
+  </div>
+
+
+
+      </div>
+
+    </div>
+  </aside>
+  <div id="sidebar-dimmer"></div>
+
+
+      </div>
+    </main>
+
+    <footer class="footer">
+      <div class="footer-inner">
+        
+
+        
+
+<div class="copyright">
+  
+  &copy; 
+  <span itemprop="copyrightYear">2020</span>
+  <span class="with-love">
+    <i class="fa fa-heart"></i>
+  </span>
+  <span class="author" itemprop="copyrightHolder">wapthen</span>
+</div>
+  <div class="powered-by">由 <a href="https://hexo.io/" class="theme-link" rel="noopener" target="_blank">Hexo</a> & <a href="https://theme-next.org/" class="theme-link" rel="noopener" target="_blank">NexT.Gemini</a> 强力驱动
+  </div>
+
+        
+
+
+
+
+
+
+
+
+      </div>
+    </footer>
+  </div>
+
+  
+  <script src="/lib/anime.min.js"></script>
+  <script src="/lib/velocity/velocity.min.js"></script>
+  <script src="/lib/velocity/velocity.ui.min.js"></script>
+
+<script src="/js/utils.js"></script>
+
+<script src="/js/motion.js"></script>
+
+
+<script src="/js/schemes/pisces.js"></script>
+
+
+<script src="/js/next-boot.js"></script>
+
+
+
+
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  
+
+  
+
+</body>
+</html>

@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=2">
+<meta name="theme-color" content="#222">
+<meta name="generator" content="Hexo 5.0.2">
+  <link rel="apple-touch-icon" sizes="180x180" href="/images/apple-touch-icon-next.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/images/favicon-32x32-next.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/images/favicon-16x16-next.png">
+  <link rel="mask-icon" href="/images/logo.svg" color="#222">
+
+<link rel="stylesheet" href="/css/main.css">
+
+
+<link rel="stylesheet" href="/lib/font-awesome/css/all.min.css">
+
+<script id="hexo-configurations">
+    var NexT = window.NexT || {};
+    var CONFIG = {"hostname":"wapthen.githu.io","root":"/","scheme":"Gemini","version":"8.0.0-rc.2","exturl":false,"sidebar":{"position":"left","display":"post","padding":18,"offset":12,"onmobile":false},"copycode":{"enable":false,"show_result":false,"style":null},"back2top":{"enable":true,"sidebar":false,"scrollpercent":false},"bookmark":{"enable":false,"color":"#222","save":"auto"},"fancybox":false,"mediumzoom":false,"lazyload":false,"pangu":false,"comments":{"style":"tabs","active":null,"storage":true,"lazyload":false,"nav":null},"algolia":{"hits":{"per_page":10},"labels":{"input_placeholder":"Search for Posts","hits_empty":"We didn't find any results for the search: ${query}","hits_stats":"${hits} results found in ${time} ms"}},"localsearch":{"enable":false,"trigger":"auto","top_n_per_article":1,"unescape":false,"preload":false},"motion":{"enable":true,"async":false,"transition":{"post_block":"fadeIn","post_header":"slideDownIn","post_body":"slideDownIn","coll_header":"slideLeftIn","sidebar":"slideUpIn"}}};
+  </script>
+
+  <meta name="description" content="Redis作为高性能的key-value数据库，数据均存放在内存里，所以对内存非常敏感。Redis作者对此做了很多细致性的优化，例如：针对字符串特定的编码；主动移除已过期的数据；对通信缓冲区及时腾空等。但这些优化机制只能减缓内存的消耗速度，作为一个应对生产环境的高可用服务，Redis还是需要一套兜底方案，即如果Redis消耗内存达到上限值或者达到服务器可用内存上限值（例如32位服务器用户进程至多使">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Redis数据淘汰机制">
+<meta property="og:url" content="https://wapthen.githu.io/2020/03/11/2020/2020-03-11-Redis%E6%95%B0%E6%8D%AE%E6%B7%98%E6%B1%B0%E6%9C%BA%E5%88%B6/index.html">
+<meta property="og:site_name" content="记录思考">
+<meta property="og:description" content="Redis作为高性能的key-value数据库，数据均存放在内存里，所以对内存非常敏感。Redis作者对此做了很多细致性的优化，例如：针对字符串特定的编码；主动移除已过期的数据；对通信缓冲区及时腾空等。但这些优化机制只能减缓内存的消耗速度，作为一个应对生产环境的高可用服务，Redis还是需要一套兜底方案，即如果Redis消耗内存达到上限值或者达到服务器可用内存上限值（例如32位服务器用户进程至多使">
+<meta property="og:locale" content="zh_CN">
+<meta property="og:image" content="https://wapthen.githu.io/images/2020/evict_policy.png">
+<meta property="og:image" content="https://wapthen.githu.io/images/2020/evict_unit.png">
+<meta property="article:published_time" content="2020-03-11T02:00:00.000Z">
+<meta property="article:modified_time" content="2020-08-12T03:14:45.589Z">
+<meta property="article:author" content="wapthen">
+<meta property="article:tag" content="Redis">
+<meta property="article:tag" content="C">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:image" content="https://wapthen.githu.io/images/2020/evict_policy.png">
+
+<link rel="canonical" href="https://wapthen.githu.io/2020/03/11/2020/2020-03-11-Redis%E6%95%B0%E6%8D%AE%E6%B7%98%E6%B1%B0%E6%9C%BA%E5%88%B6/">
+
+
+<script id="page-configurations">
+  // https://hexo.io/docs/variables.html
+  CONFIG.page = {
+    sidebar: "",
+    isHome : false,
+    isPost : true,
+    lang   : 'zh-CN'
+  };
+</script>
+
+  <title>Redis数据淘汰机制 | 记录思考</title>
+  
+
+
+
+
+
+
+  <noscript>
+  <style>
+  .use-motion .brand,
+  .use-motion .menu-item,
+  .sidebar-inner,
+  .use-motion .post-block,
+  .use-motion .pagination,
+  .use-motion .comments,
+  .use-motion .post-header,
+  .use-motion .post-body,
+  .use-motion .collection-header { opacity: initial; }
+
+  .use-motion .site-title,
+  .use-motion .site-subtitle {
+    opacity: initial;
+    top: initial;
+  }
+
+  .use-motion .logo-line-before i { left: initial; }
+  .use-motion .logo-line-after i { right: initial; }
+  </style>
+</noscript>
+
+</head>
+
+<body itemscope itemtype="http://schema.org/WebPage">
+  <div class="container use-motion">
+    <div class="headband"></div>
+
+    <header class="header" itemscope itemtype="http://schema.org/WPHeader">
+      <div class="header-inner"><div class="site-brand-container">
+  <div class="site-nav-toggle">
+    <div class="toggle" aria-label="切换导航栏">
+        <span class="toggle-line toggle-line-first"></span>
+        <span class="toggle-line toggle-line-middle"></span>
+        <span class="toggle-line toggle-line-last"></span>
+    </div>
+  </div>
+
+  <div class="site-meta">
+
+    <a href="/" class="brand" rel="start">
+      <span class="logo-line-before"><i></i></span>
+      <h1 class="site-title">记录思考</h1>
+      <span class="logo-line-after"><i></i></span>
+    </a>
+  </div>
+
+  <div class="site-nav-right">
+    <div class="toggle popup-trigger">
+    </div>
+  </div>
+</div>
+
+
+
+<nav class="site-nav">
+  <ul id="menu" class="main-menu menu">
+        <li class="menu-item menu-item-home">
+
+    <a href="/" rel="section"><i class="fa fa-home fa-fw"></i>首页</a>
+
+  </li>
+        <li class="menu-item menu-item-tags">
+
+    <a href="/tags/" rel="section"><i class="fa fa-tags fa-fw"></i>标签</a>
+
+  </li>
+  </ul>
+</nav>
+
+
+
+
+</div>
+    </header>
+
+    
+  <div class="back-to-top">
+    <i class="fa fa-arrow-up"></i>
+    <span>0%</span>
+  </div>
+
+
+    <main class="main">
+      <div class="main-inner">
+        <div class="content-wrap">
+          
+
+          <div class="content post posts-expand">
+            
+
+    
+  
+  
+  <article itemscope itemtype="http://schema.org/Article" class="post-block" lang="zh-CN">
+    <link itemprop="mainEntityOfPage" href="https://wapthen.githu.io/2020/03/11/2020/2020-03-11-Redis%E6%95%B0%E6%8D%AE%E6%B7%98%E6%B1%B0%E6%9C%BA%E5%88%B6/">
+
+    <span hidden itemprop="author" itemscope itemtype="http://schema.org/Person">
+      <meta itemprop="image" content="/images/avatar.gif">
+      <meta itemprop="name" content="wapthen">
+      <meta itemprop="description" content="">
+    </span>
+
+    <span hidden itemprop="publisher" itemscope itemtype="http://schema.org/Organization">
+      <meta itemprop="name" content="记录思考">
+    </span>
+      <header class="post-header">
+        <h1 class="post-title" itemprop="name headline">
+          Redis数据淘汰机制
+        </h1>
+
+        <div class="post-meta">
+            <span class="post-meta-item">
+              <span class="post-meta-item-icon">
+                <i class="far fa-calendar"></i>
+              </span>
+              <span class="post-meta-item-text">发表于</span>
+
+              <time title="创建时间：2020-03-11 10:00:00" itemprop="dateCreated datePublished" datetime="2020-03-11T10:00:00+08:00">2020-03-11</time>
+            </span>
+              <span class="post-meta-item">
+                <span class="post-meta-item-icon">
+                  <i class="far fa-calendar-check"></i>
+                </span>
+                <span class="post-meta-item-text">更新于</span>
+                <time title="修改时间：2020-08-12 11:14:45" itemprop="dateModified" datetime="2020-08-12T11:14:45+08:00">2020-08-12</time>
+              </span>
+
+          
+
+        </div>
+      </header>
+
+    
+    
+    
+    <div class="post-body" itemprop="articleBody">
+
+      
+        <p>Redis作为高性能的key-value数据库，数据均存放在内存里，所以对内存非常敏感。Redis作者对此做了很多细致性的优化，例如：针对字符串特定的编码；主动移除已过期的数据；对通信缓冲区及时腾空等。但这些优化机制只能减缓内存的消耗速度，作为一个应对生产环境的高可用服务，Redis还是需要一套兜底方案，即如果Redis消耗内存达到上限值或者达到服务器可用内存上限值（例如32位服务器用户进程至多使用3GB），保证进程依旧维持可用状态，这套机制便是数据淘汰机制。</p>
+<a id="more"></a>
+
+<h1 id="1-淘汰策略分类"><a href="#1-淘汰策略分类" class="headerlink" title="1. 淘汰策略分类"></a>1. 淘汰策略分类</h1><p>Redis数据淘汰机制是为了保证极端情况下服务依旧可用的自身应对方案。当然除自身应对方案之外，实际生产环境必然还需要有一套运维监控体系，例如：Redis内存逼近阈值等健康状态监控。</p>
+<p>基于5.0.5版本，如果Redis内存使用量达到配置的maxmemory参数上限，支持如下策略：</p>
+<p>  <img src="/images/2020/evict_policy.png" alt="policy"></p>
+<ul>
+<li><p>不淘汰数据的策略</p>
+<p>noeviction，对于写属性的命令返回错误；</p>
+</li>
+<li><p>淘汰数据的策略</p>
+<table>
+<thead>
+<tr>
+<th align="center"></th>
+<th align="center">LRU机制</th>
+<th align="center">LFU机制</th>
+<th align="center">随机机制</th>
+<th align="center">TTL机制</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="center">针对全部keys</td>
+<td align="center">allkeys-lru</td>
+<td align="center">allkeys-lfu</td>
+<td align="center">allkeys-random</td>
+<td align="center"></td>
+</tr>
+<tr>
+<td align="center">只针对expire属性的key</td>
+<td align="center">volatile-lru</td>
+<td align="center">volatile-lfu</td>
+<td align="center">volatile-random</td>
+<td align="center">volatile-ttl</td>
+</tr>
+</tbody></table>
+<p>注意：对于volatile-lru，volatile-lfu，volatile-random，volatile-ttl这4种策略，如果内存里已没有expire属性的key数据可供淘汰的情况下，则会跟noeviction策略表现一致。</p>
+</li>
+</ul>
+<h1 id="2-内部实现机制"><a href="#2-内部实现机制" class="headerlink" title="2. 内部实现机制"></a>2. 内部实现机制</h1><p>上述各个淘汰策略，从<code>机制</code>纬度来看，随机机制比较简单，只要针对特定的字典随机抽取key进行删除即可。其他的机制则引入了时间戳，访问频率等相关纬度。为支持这些不同纬度共同参与淘汰策略，Redis内部维护了一个定长的<code>淘汰池</code>数组，根据不同机制计算得分，当需要淘汰数据时，从<code>淘汰池</code>里选择一个分数最高（即最适合淘汰）key将其删除。</p>
+<h2 id="2-1-淘汰池数据结构"><a href="#2-1-淘汰池数据结构" class="headerlink" title="2.1 淘汰池数据结构"></a>2.1 <code>淘汰池</code>数据结构</h2><p><code>淘汰池</code>是一个定长数组，最多可记录16组成员，数组内按照分数升序组织，每个成员的结构体如下：</p>
+<p><img src="/images/2020/evict_unit.png" alt="evict_unit"></p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line"><span class="class"><span class="keyword">struct</span> <span class="title">evictionPoolEntry</span> &#123;</span></span><br><span class="line">  <span class="keyword">unsigned</span> <span class="keyword">long</span> <span class="keyword">long</span> idle; <span class="comment">// 分数，排序依据</span></span><br><span class="line">  sds key; <span class="comment">// 指针，当预存的数据长度大于预分配的cache容量时，此指针指向一块单独创建的新内存，在移除时会释放此内存；否则此指针与cached指针相同，指向同一块复用内存。</span></span><br><span class="line">  sds cached; <span class="comment">// 指针，指向一块预分配的内存，供保存数据重复使用。</span></span><br><span class="line">  <span class="keyword">int</span> dbid; <span class="comment">// key所在的db库id</span></span><br><span class="line">&#125;;</span><br></pre></td></tr></table></figure>
+
+<p>该结构体的特别之处在于<code>key</code>与<code>cached</code>这两个成员之间的关系。首先这两个成员的类型为<code>sds</code>即<code>char *</code>指针，<code>cached</code>成员指向一个255字节定长可复用的内存空间，其生命周期与淘汰池一致。<code>key</code>成员指向保存数据的实际内存地址，如果预存数据小于等于255字节，则数据会保存到<code>cached</code>所指向的可复用内存里，同时<code>key</code>也指向此复用内存地址（即<code>key</code>=<code>cached</code>）；如果大于255字节，表示该数据是无法完整的保存到<code>cached</code>指向的内存里，所以<code>key</code>会指向一块单独开辟的新内存，并在移除数据时一并释放此单独开辟的内存。</p>
+<p>整个<code>淘汰池</code>数组成员需要保证升序，插入/移除操作需要平移该位置之前/之后的k个成员，而每个成员为<code>struct evictionPoolEntry</code>类型，此结构体内部只记录了指针，并未包含实际数据所在的内存空间，所以整体平移字节数为<code>k * sizeof(struct evictionPoolEntry)</code>。再加上整个数组至多保存16个成员，所以插入/移除的性能还是可以保证的。该设计方案是性能与内存高利用率的折中考虑。</p>
+<h2 id="2-2-TTL机制"><a href="#2-2-TTL机制" class="headerlink" title="2.2 TTL机制"></a>2.2 TTL机制</h2><p>TTL是Time To Live的缩写，即淘汰最短存活时长的key数据。只有expire属性的数据才有存活时长，所以淘汰策略的TTL机制纬度下只有<code>volatile-ttl</code>。</p>
+<p>这里简单的提一下expire数据在Redis里的实现方式，key-value完整数据会保存到对应db库的主字典里，而此key-value的expire属性数据会在同一个db库的expire字典里记录key-expire过期时刻，即expire字典相当于索引。</p>
+<p>TTL机制就是基于这个expire过期时刻来计算的，expire过期时刻越小表示存活时长越短，而<code>淘汰池</code>是优先淘汰分数最高的数据，这两者是相反的。一般而言首先想到的计算方案是将expire过期时刻取负值即可满足淘汰机制的要求，而<code>淘汰池</code>里的分数字段<code>idle</code>类型为<code>unsigned long long</code> 无符号整型，所以Redis做了转换，即 <code>ULLONG_MAX - expire过期时刻</code>。</p>
+<h2 id="2-3-LRU机制"><a href="#2-3-LRU机制" class="headerlink" title="2.3 LRU机制"></a>2.3 LRU机制</h2><p>LRU是Least Recently Used的缩写，即淘汰最近最少使用（空闲时长最大）的key数据。这个机制本质上是需要记录每个key的最近一次使用时刻，然后以空闲时长（即最新时刻-最近一次使用时刻）作为排序依据存入<code>淘汰池</code>。</p>
+<p>记录每个key的最近一次使用时刻，这个很简单，只需要使用一个int型字段(4字节)记录时间戳即可。但Redis是纯内存数据库，对内存消耗很敏感，Redis作者围绕这个int型做起了文章，如下是Redis保存key数据的实际结构体robj。</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br></pre></td><td class="code"><pre><span class="line"><span class="meta">#<span class="meta-keyword">define</span> LRU_BITS 24</span></span><br><span class="line"><span class="meta">#<span class="meta-keyword">define</span> LRU_CLOCK_MAX ((1<span class="meta-string">&lt;&lt;LRU_BITS)-1) /* Max value of obj-&gt;lru */</span></span></span><br><span class="line"></span><br><span class="line"><span class="keyword">typedef</span> <span class="class"><span class="keyword">struct</span> <span class="title">redisObject</span> &#123;</span></span><br><span class="line">  <span class="keyword">unsigned</span> type:<span class="number">4</span>; <span class="comment">// 类型，例如：字符串/链表/集合/字典等</span></span><br><span class="line">  <span class="keyword">unsigned</span> encoding:<span class="number">4</span>; <span class="comment">// 编码方案</span></span><br><span class="line">  <span class="keyword">unsigned</span> lru:LRU_BITS; <span class="comment">/* LRU time (relative to global lru_clock) or</span></span><br><span class="line"><span class="comment">                          * LFU data (least significant 8 bits frequency</span></span><br><span class="line"><span class="comment">                          * and most significant 16 bits access time). */</span></span><br><span class="line">  <span class="keyword">int</span> refcount; <span class="comment">// 引用计数器</span></span><br><span class="line">  <span class="keyword">void</span> *ptr; <span class="comment">// 指向保存实际数据的内存地址</span></span><br><span class="line">&#125; robj;</span><br></pre></td></tr></table></figure>
+
+<p>Redis作者通过位域的使用，将类型、编码方案、时间戳都汇集到一个int型里，节约使用内存。虽然用于记录时间戳的字段<code>lru</code>仅占用24bit，但是对于支持LRU机制依然足够，只不过在记录时间戳（秒级）时需要稍微处理一下避免越界<code>lru = (mstime()/LRU_CLOCK_RESOLUTION) &amp; LRU_CLOCK_MAX</code>。</p>
+<p>位域可以节约内存，而每次操作key时为更新lru字段均需要获取最新的时间戳，这种频繁陷入内核操作会对性能造成损耗<span style="color:red;">[1]</span>。其实对于LRU所用时间戳粒度为秒级的这种情况来说，如果1秒内调用多次<code>gettimeofday()</code>获得的数值几乎相同，所以针对此处Redis作者做了性能优化，定义了一个全局变量<code>lruclock</code>，主进程周期性的更新<code>lruclock</code>为最新秒级时间戳，当处于高频场景下，直接将<code>lruclock</code>作为最新的时间戳使用，避免无谓的性能损耗。</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment">// 计算当前的lru字段数值</span></span><br><span class="line"><span class="function"><span class="keyword">unsigned</span> <span class="keyword">int</span> <span class="title">LRU_CLOCK</span><span class="params">(<span class="keyword">void</span>)</span> </span>&#123;</span><br><span class="line">  <span class="keyword">unsigned</span> <span class="keyword">int</span> lruclock;</span><br><span class="line">  <span class="keyword">if</span> (<span class="number">1000</span>/server.hz &lt;= LRU_CLOCK_RESOLUTION) &#123;</span><br><span class="line">      <span class="comment">// 主进程的定时任务执行频率高于1秒1次的场景</span></span><br><span class="line">      atomicGet(server.lruclock,lruclock);</span><br><span class="line">  &#125; <span class="keyword">else</span> &#123;</span><br><span class="line">      <span class="comment">// 执行频率低于1秒1次的场景</span></span><br><span class="line">      lruclock = getLRUClock();</span><br><span class="line">  &#125;</span><br><span class="line">  <span class="keyword">return</span> lruclock;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<h2 id="2-4-LFU机制"><a href="#2-4-LFU机制" class="headerlink" title="2.4 LFU机制"></a>2.4 LFU机制</h2><p>LFU是Least Frequently Used的缩写，即淘汰使用频率最低的数据。该机制是在4.0版本开始引入的，以弥补LRU机制的不足：只基于最近是否被用过这一纬度进行数据淘汰，而未考虑过去一段时间内数据的使用频率。</p>
+<p>淘汰策略本质上是基于对过去使用情况的统计，决定保留哪些数据以应对未来的使用。LRU机制自身只考虑了一个纬度：时间，而LFU机制则综合考虑了两个纬度：时间与使用次数。LRU机制的出发点是最新用过的数据，那么未来大概率会再被用到。LFU机制则是从使用频率角度出发，认为过去一段时间里的高频数据，未来大概率会再被用到。两个机制各有利弊，也各有使用场景，可以根据具体业务需求进行相应的配置。</p>
+<p>“使用频率”概念上的公式：</p>
+<blockquote>
+<p>当前时刻的使用频率 = 一段时间内的总次数 / 时间段</p>
+</blockquote>
+<p>具体实现时会有很多不同的设计，例如：“时间段”是采用从初始计时到当前时刻，还是采用定长时间段（类似滑动窗口式的随着时间平移）等，这里面需要耗费不少的内存与CPU用于记录相关数据。</p>
+<p>本质上LFU机制是将两个纬度：时间与使用次数，通过一定的方式映射到同一个参考体系：频率，并按照频率排序，淘汰低频率的数据。在保证最终效果的基础上，需要考虑为此引入的性能与内存消耗问题，Redis作者参考<code>Morris counter</code><span style="color:red;">[2]</span>，设计了一套新颖的方案，以很少的内存与计算量实现了LFU机制。</p>
+<p>这里首先简单描述一下<code>Morris counter</code>原理。计数器都用过，一般来说就是某个对象出现一次，就将计数器+1。如果出现次数是个非常大的数值呢？为避免计数器溢出，多数情况下会调整计数器类型：unsigned char —&gt; unsigned short —&gt; unsigned int —&gt; unsigned long，通过使用更多字节存储数值来避免溢出，这种方案足以应对一般的计数场景。那么在极端场景：保存极大的数值但尽量少用内存，该如何优化呢？其实我们在日常编码中接触过类似的场景，float型与int型都占用4字节空间，unsigned int所能表示的最大值为4294967295，而float所能表示的最大值为3.402823e+38<span style="color:red;">[3]</span>。其实根本原因是float型内部特殊的编码方式：符号位、指数段、精度段。有指数段的存在，就可以表示极大的数值，却会损失精度。<code>Morris counter</code>使用了类似float的原理，是一个以极小内存却可以表示很大数值的“概率性计数器”，因其内部实现用到随机数，每次更新计数器时，先计算一下随机数，如超过一个数值，计数器才会增1，否则维持不变，体现了“以量变求质变”的思想。缺点是不准确，只能表示量级的差异。</p>
+<p><code>Morris counter</code>这一“概率性计数器”是增长式的，即新值只会大于等于旧值，而“使用频率”一定是有升有降的，所以Redis作者对<code>Morris counter</code>引入了衰退因素，该衰退因素与“时间差”正相关，即“时间差”越大，衰退幅度越大。这样基于“使用次数”纬度的<code>Morris counter</code>，叠加基于“时间”纬度的衰退因素，所生成的数值就是将“使用次数”与“时间”两纬度映射到一个参考体系：使用频率。这样改进后的<code>Morris counter</code>数值就表示“使用频率”，即<code>淘汰池</code>里所用的排序依据。最终内存里只需要记录：改进后的<code>Morris counter</code>计数器与时间戳两个变量。</p>
+<p>具体实现时Redis作者又综合考量了LRU机制相关内存，<code>Morris counter</code>计数器只用8bit内存，另外使用16bit内存存储“时间戳”，这样整个LFU使用24bit内存，可以复用<code>robj</code>里的<code>lru</code>字段，而无需为LFU单独开辟内存。当然这里的16bit是无法记录完整的32bit秒级时间戳，为此做了精度上的舍弃，这16bit只记录分钟级的时间戳，即最大值为65535分钟，如超过此值则进入下一轮重新计时，机制上类似于<code>循环数组</code>。</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br><span class="line">36</span><br><span class="line">37</span><br><span class="line">38</span><br><span class="line">39</span><br><span class="line">40</span><br><span class="line">41</span><br><span class="line">42</span><br><span class="line">43</span><br><span class="line">44</span><br><span class="line">45</span><br><span class="line">46</span><br><span class="line">47</span><br><span class="line">48</span><br><span class="line">49</span><br><span class="line">50</span><br><span class="line">51</span><br><span class="line">52</span><br><span class="line">53</span><br><span class="line">54</span><br><span class="line">55</span><br><span class="line">56</span><br><span class="line">57</span><br><span class="line">58</span><br><span class="line">59</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment">/**</span></span><br><span class="line"><span class="comment"> * 衰退操作</span></span><br><span class="line"><span class="comment"> * 对当前对象的`Morris counter`计数 进行 基于“时间差”纬度的衰减操作，得到一个衰减后的新计数</span></span><br><span class="line"><span class="comment">*/</span></span><br><span class="line"><span class="function"><span class="keyword">unsigned</span> <span class="keyword">long</span> <span class="title">LFUDecrAndReturn</span><span class="params">(robj *o)</span> </span>&#123;</span><br><span class="line">  <span class="comment">// 取出当前对象的最近一次访问时刻，单位分钟</span></span><br><span class="line">  <span class="keyword">unsigned</span> <span class="keyword">long</span> ldt = o-&gt;lru &gt;&gt; <span class="number">8</span>;</span><br><span class="line"></span><br><span class="line">  <span class="comment">// 取出当前对象的`Morris counter`计数，只占8bit，最大值为255</span></span><br><span class="line">  <span class="keyword">unsigned</span> <span class="keyword">long</span> counter = o-&gt;lru &amp; <span class="number">255</span>;</span><br><span class="line"></span><br><span class="line">  <span class="comment">// 基于时间差 以及 衰退因子，计算衰退数值</span></span><br><span class="line">  <span class="keyword">unsigned</span> <span class="keyword">long</span> num_periods = server.lfu_decay_time ? LFUTimeElapsed(ldt) / server.lfu_decay_time : <span class="number">0</span>;</span><br><span class="line"></span><br><span class="line">  <span class="comment">// 计算衰退后的新计数 </span></span><br><span class="line">  <span class="keyword">if</span> (num_periods)</span><br><span class="line">      <span class="comment">// 衰减公式 是 当前计数 - 衰退数值, 如果为负值则置为0</span></span><br><span class="line">      counter = (num_periods &gt; counter) ? <span class="number">0</span> : counter - num_periods;</span><br><span class="line"></span><br><span class="line">  <span class="comment">// 返回经过衰退操作的新计数</span></span><br><span class="line">  <span class="keyword">return</span> counter;</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"></span><br><span class="line"><span class="comment">/** </span></span><br><span class="line"><span class="comment"> * 计算一个新的`Morris counter`计数，作为LFU使用频率</span></span><br><span class="line"><span class="comment"> * 该函数返回值越大，表示使用频率越高</span></span><br><span class="line"><span class="comment"> * 内部是以一个字节8bit记录LFU使用频率,最大值为255</span></span><br><span class="line"><span class="comment">*/</span></span><br><span class="line"><span class="function"><span class="keyword">uint8_t</span> <span class="title">LFULogIncr</span><span class="params">(<span class="keyword">uint8_t</span> counter)</span> </span>&#123;</span><br><span class="line">  <span class="comment">// 旧的计数已经达到上限值，则直接返回该上限值</span></span><br><span class="line">  <span class="keyword">if</span> (counter == <span class="number">255</span>) <span class="keyword">return</span> <span class="number">255</span>;</span><br><span class="line">  </span><br><span class="line">  <span class="comment">// 获取一个新的随机概率</span></span><br><span class="line">  <span class="keyword">double</span> r = (<span class="keyword">double</span>)rand()/RAND_MAX;</span><br><span class="line"></span><br><span class="line">  <span class="comment">/* 基于旧的计数计算一个概率标杆 */</span></span><br><span class="line"></span><br><span class="line">  <span class="comment">// 计数器最开始初始值为LFU_INIT_VAL，此处需减去该值</span></span><br><span class="line">  <span class="keyword">double</span> baseval = counter - LFU_INIT_VAL;</span><br><span class="line">  <span class="comment">// 避免出现负值</span></span><br><span class="line">  <span class="keyword">if</span> (baseval &lt; <span class="number">0</span>) baseval = <span class="number">0</span>;</span><br><span class="line">  <span class="comment">// 计算概率标杆，引入配置参数lfu_log_factor因子，该因子越大，标杆概率越小</span></span><br><span class="line">  <span class="keyword">double</span> p = <span class="number">1.0</span>/(baseval*server.lfu_log_factor+<span class="number">1</span>);</span><br><span class="line"></span><br><span class="line">  <span class="comment">// 判断新随机概率r 与 概率标杆p 的大小</span></span><br><span class="line">  <span class="comment">// 该语句整体表达的含义是 p越小，counter变大的几率越小</span></span><br><span class="line">  <span class="keyword">if</span> (r &lt; p) counter++;</span><br><span class="line"></span><br><span class="line">  <span class="comment">// 得到最新的`Morris counter`数值</span></span><br><span class="line">  <span class="keyword">return</span> counter;</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"></span><br><span class="line"><span class="comment">// 更新LFU数值</span></span><br><span class="line"><span class="function"><span class="keyword">void</span> <span class="title">updateLFU</span><span class="params">(robj *val)</span> </span>&#123;</span><br><span class="line">  <span class="keyword">unsigned</span> <span class="keyword">long</span> counter = LFULogIncr(LFUDecrAndReturn(val));</span><br><span class="line">  val-&gt;lru = (LFUGetTimeInMinutes()&lt;&lt;<span class="number">8</span>) | counter;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+
+
+<p><strong><em>参考资料</em></strong></p>
+<ol>
+<li><a target="_blank" rel="noopener" href="https://stackoverflow.com/questions/6498972/faster-equivalent-of-gettimeofday">https://stackoverflow.com/questions/6498972/faster-equivalent-of-gettimeofday</a></li>
+<li><a target="_blank" rel="noopener" href="https://jameshfisher.com/2018/12/17/how-does-a-morris-approximate-counter-work/">https://jameshfisher.com/2018/12/17/how-does-a-morris-approximate-counter-work/</a></li>
+<li><a target="_blank" rel="noopener" href="https://en.cppreference.com/w/c/types/limits">https://en.cppreference.com/w/c/types/limits</a></li>
+</ol>
+
+    </div>
+
+    
+    
+    
+
+      <footer class="post-footer">
+          <div class="post-tags">
+              <a href="/tags/Redis/" rel="tag"># Redis</a>
+              <a href="/tags/C/" rel="tag"># C</a>
+          </div>
+
+        
+
+
+        
+    <div class="post-nav">
+      <div class="post-nav-item">
+    <a href="/2020/03/10/2020/2020-03-10-Redis%E4%BA%8B%E5%8A%A1%E5%AE%9E%E7%8E%B0%E6%9C%BA%E5%88%B6/" rel="prev" title="Redis事务实现机制">
+      <i class="fa fa-chevron-left"></i> Redis事务实现机制
+    </a></div>
+      <div class="post-nav-item">
+    <a href="/2020/03/13/2020/2020-03-13-Redis%E9%AB%98%E6%80%A7%E8%83%BD%E5%8E%9F%E5%9B%A0%E5%88%86%E6%9E%90/" rel="next" title="Redis高性能原因分析">
+      Redis高性能原因分析 <i class="fa fa-chevron-right"></i>
+    </a></div>
+    </div>
+      </footer>
+    
+  </article>
+  
+  
+  
+
+
+
+          </div>
+          
+
+<script>
+  window.addEventListener('tabs:register', () => {
+    let { activeClass } = CONFIG.comments;
+    if (CONFIG.comments.storage) {
+      activeClass = localStorage.getItem('comments_active') || activeClass;
+    }
+    if (activeClass) {
+      let activeTab = document.querySelector(`a[href="#comment-${activeClass}"]`);
+      if (activeTab) {
+        activeTab.click();
+      }
+    }
+  });
+  if (CONFIG.comments.storage) {
+    window.addEventListener('tabs:click', event => {
+      if (!event.target.matches('.tabs-comment .tab-content .tab-pane')) return;
+      let commentClass = event.target.classList[1];
+      localStorage.setItem('comments_active', commentClass);
+    });
+  }
+</script>
+
+        </div>
+          
+  
+  <div class="toggle sidebar-toggle">
+    <span class="toggle-line toggle-line-first"></span>
+    <span class="toggle-line toggle-line-middle"></span>
+    <span class="toggle-line toggle-line-last"></span>
+  </div>
+
+  <aside class="sidebar">
+    <div class="sidebar-inner">
+
+      <ul class="sidebar-nav motion-element">
+        <li class="sidebar-nav-toc">
+          文章目录
+        </li>
+        <li class="sidebar-nav-overview">
+          站点概览
+        </li>
+      </ul>
+
+      <!--noindex-->
+      <div class="post-toc-wrap sidebar-panel">
+          <div class="post-toc motion-element"><ol class="nav"><li class="nav-item nav-level-1"><a class="nav-link" href="#1-%E6%B7%98%E6%B1%B0%E7%AD%96%E7%95%A5%E5%88%86%E7%B1%BB"><span class="nav-text">1. 淘汰策略分类</span></a></li><li class="nav-item nav-level-1"><a class="nav-link" href="#2-%E5%86%85%E9%83%A8%E5%AE%9E%E7%8E%B0%E6%9C%BA%E5%88%B6"><span class="nav-text">2. 内部实现机制</span></a><ol class="nav-child"><li class="nav-item nav-level-2"><a class="nav-link" href="#2-1-%E6%B7%98%E6%B1%B0%E6%B1%A0%E6%95%B0%E6%8D%AE%E7%BB%93%E6%9E%84"><span class="nav-text">2.1 淘汰池数据结构</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#2-2-TTL%E6%9C%BA%E5%88%B6"><span class="nav-text">2.2 TTL机制</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#2-3-LRU%E6%9C%BA%E5%88%B6"><span class="nav-text">2.3 LRU机制</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#2-4-LFU%E6%9C%BA%E5%88%B6"><span class="nav-text">2.4 LFU机制</span></a></li></ol></li></ol></div>
+      </div>
+      <!--/noindex-->
+
+      <div class="site-overview-wrap sidebar-panel">
+        <div class="site-author motion-element" itemprop="author" itemscope itemtype="http://schema.org/Person">
+  <p class="site-author-name" itemprop="name">wapthen</p>
+  <div class="site-description" itemprop="description"></div>
+</div>
+<div class="site-state-wrap motion-element">
+  <nav class="site-state">
+      <div class="site-state-item site-state-posts">
+          <a href="/archives">
+          <span class="site-state-item-count">14</span>
+          <span class="site-state-item-name">日志</span>
+        </a>
+      </div>
+      <div class="site-state-item site-state-tags">
+            <a href="/tags/">
+          
+        <span class="site-state-item-count">8</span>
+        <span class="site-state-item-name">标签</span></a>
+      </div>
+  </nav>
+</div>
+  <div class="links-of-author motion-element">
+      <span class="links-of-author-item">
+        <a href="https://github.com/wapthen" title="GitHub → https:&#x2F;&#x2F;github.com&#x2F;wapthen" rel="noopener" target="_blank"><i class="fab fa-github fa-fw"></i>GitHub</a>
+      </span>
+      <span class="links-of-author-item">
+        <a href="mailto:wapthen@163.com" title="E-Mail → mailto:wapthen@163.com" rel="noopener" target="_blank"><i class="fa fa-envelope fa-fw"></i>E-Mail</a>
+      </span>
+  </div>
+
+
+
+      </div>
+
+    </div>
+  </aside>
+  <div id="sidebar-dimmer"></div>
+
+
+      </div>
+    </main>
+
+    <footer class="footer">
+      <div class="footer-inner">
+        
+
+        
+
+<div class="copyright">
+  
+  &copy; 
+  <span itemprop="copyrightYear">2020</span>
+  <span class="with-love">
+    <i class="fa fa-heart"></i>
+  </span>
+  <span class="author" itemprop="copyrightHolder">wapthen</span>
+</div>
+  <div class="powered-by">由 <a href="https://hexo.io/" class="theme-link" rel="noopener" target="_blank">Hexo</a> & <a href="https://theme-next.org/" class="theme-link" rel="noopener" target="_blank">NexT.Gemini</a> 强力驱动
+  </div>
+
+        
+
+
+
+
+
+
+
+
+      </div>
+    </footer>
+  </div>
+
+  
+  <script src="/lib/anime.min.js"></script>
+  <script src="/lib/velocity/velocity.min.js"></script>
+  <script src="/lib/velocity/velocity.ui.min.js"></script>
+
+<script src="/js/utils.js"></script>
+
+<script src="/js/motion.js"></script>
+
+
+<script src="/js/schemes/pisces.js"></script>
+
+
+<script src="/js/next-boot.js"></script>
+
+
+
+
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  
+
+  
+
+</body>
+</html>
