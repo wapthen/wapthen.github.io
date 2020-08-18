@@ -20,16 +20,16 @@
     var CONFIG = {"hostname":"wapthen.githu.io","root":"/","scheme":"Gemini","version":"8.0.0-rc.2","exturl":false,"sidebar":{"position":"left","display":"post","padding":18,"offset":12,"onmobile":false},"copycode":{"enable":false,"show_result":false,"style":null},"back2top":{"enable":true,"sidebar":false,"scrollpercent":false},"bookmark":{"enable":false,"color":"#222","save":"auto"},"fancybox":false,"mediumzoom":false,"lazyload":false,"pangu":false,"comments":{"style":"tabs","active":null,"storage":true,"lazyload":false,"nav":null},"algolia":{"hits":{"per_page":10},"labels":{"input_placeholder":"Search for Posts","hits_empty":"We didn't find any results for the search: ${query}","hits_stats":"${hits} results found in ${time} ms"}},"localsearch":{"enable":false,"trigger":"auto","top_n_per_article":1,"unescape":false,"preload":false},"motion":{"enable":true,"async":false,"transition":{"post_block":"fadeIn","post_header":"slideDownIn","post_body":"slideDownIn","coll_header":"slideLeftIn","sidebar":"slideUpIn"}}};
   </script>
 
-  <meta name="description" content="随着IPv6的普及，越来越多的国家运营商开始推广IPv6技术，这也就促使APP需要支持IPv6环境。APP开发商在暂无运营商IPv6网络接入的情况下，为便于开发与测试，可以在内网搭建一套纯IPv6的接入环境，并采用隧道技术对外接入运营商的IPv4网络。 本文描述的是如何在内网搭建隧道服务，对内自主分配IPv6地址，对外接入运营商的IPv4地址，访问互联网公共服务。">
+  <meta name="description" content="随着IPv6的普及，越来越多的国家运营商开始推广IPv6技术，这也就促使APP需要支持IPv6环境。APP开发商在暂无运营商IPv6网络接入的情况下，为便于开发与测试，可以在内网搭建一套纯IPv6的接入环境，并采用NAT技术对外接入运营商的IPv4网络。 本文描述的是如何在内网搭建NAT服务，对内自主分配IPv6地址，对外接入运营商的IPv4地址，访问互联网公共服务。">
 <meta property="og:type" content="article">
 <meta property="og:title" content="使用NAT技术搭建IPv6内网访问IPv4的互联网环境">
 <meta property="og:url" content="https://wapthen.githu.io/2020/08/12/2020/2020-08-12-%E4%BD%BF%E7%94%A8NAT%E6%8A%80%E6%9C%AF%E6%90%AD%E5%BB%BAIPv6%E5%86%85%E7%BD%91%E8%AE%BF%E9%97%AEIPv4%E7%9A%84%E4%BA%92%E8%81%94%E7%BD%91%E7%8E%AF%E5%A2%83/index.html">
 <meta property="og:site_name" content="记录思考">
-<meta property="og:description" content="随着IPv6的普及，越来越多的国家运营商开始推广IPv6技术，这也就促使APP需要支持IPv6环境。APP开发商在暂无运营商IPv6网络接入的情况下，为便于开发与测试，可以在内网搭建一套纯IPv6的接入环境，并采用隧道技术对外接入运营商的IPv4网络。 本文描述的是如何在内网搭建隧道服务，对内自主分配IPv6地址，对外接入运营商的IPv4地址，访问互联网公共服务。">
+<meta property="og:description" content="随着IPv6的普及，越来越多的国家运营商开始推广IPv6技术，这也就促使APP需要支持IPv6环境。APP开发商在暂无运营商IPv6网络接入的情况下，为便于开发与测试，可以在内网搭建一套纯IPv6的接入环境，并采用NAT技术对外接入运营商的IPv4网络。 本文描述的是如何在内网搭建NAT服务，对内自主分配IPv6地址，对外接入运营商的IPv4地址，访问互联网公共服务。">
 <meta property="og:locale" content="zh_CN">
 <meta property="og:image" content="https://wapthen.githu.io/images/2020/IPv6-only.png">
 <meta property="article:published_time" content="2020-08-12T02:00:00.000Z">
-<meta property="article:modified_time" content="2020-08-18T01:42:26.446Z">
+<meta property="article:modified_time" content="2020-08-18T01:47:00.586Z">
 <meta property="article:author" content="wapthen">
 <meta property="article:tag" content="tayga">
 <meta property="article:tag" content="NAT64">
@@ -185,7 +185,7 @@
                   <i class="far fa-calendar-check"></i>
                 </span>
                 <span class="post-meta-item-text">更新于</span>
-                <time title="修改时间：2020-08-18 09:42:26" itemprop="dateModified" datetime="2020-08-18T09:42:26+08:00">2020-08-18</time>
+                <time title="修改时间：2020-08-18 09:47:00" itemprop="dateModified" datetime="2020-08-18T09:47:00+08:00">2020-08-18</time>
               </span>
 
           
@@ -199,11 +199,11 @@
     <div class="post-body" itemprop="articleBody">
 
       
-        <p>随着IPv6的普及，越来越多的国家运营商开始推广IPv6技术，这也就促使APP需要支持IPv6环境。APP开发商在暂无运营商IPv6网络接入的情况下，为便于开发与测试，可以在内网搭建一套纯IPv6的接入环境，并采用隧道技术对外接入运营商的IPv4网络。</p>
-<p>本文描述的是如何在内网搭建隧道服务，对内自主分配IPv6地址，对外接入运营商的IPv4地址，访问互联网公共服务。</p>
+        <p>随着IPv6的普及，越来越多的国家运营商开始推广IPv6技术，这也就促使APP需要支持IPv6环境。APP开发商在暂无运营商IPv6网络接入的情况下，为便于开发与测试，可以在内网搭建一套纯IPv6的接入环境，并采用NAT技术对外接入运营商的IPv4网络。</p>
+<p>本文描述的是如何在内网搭建NAT服务，对内自主分配IPv6地址，对外接入运营商的IPv4地址，访问互联网公共服务。</p>
 <a id="more"></a>
 
-<h1 id="一-系统环境"><a href="#一-系统环境" class="headerlink" title="一. 系统环境"></a>一. 系统环境</h1><h2 id="1-1-隧道服务器"><a href="#1-1-隧道服务器" class="headerlink" title="1.1 隧道服务器"></a>1.1 隧道服务器</h2><pre><code>- Ubuntu 18.04桌面版
+<h1 id="一-系统环境"><a href="#一-系统环境" class="headerlink" title="一. 系统环境"></a>一. 系统环境</h1><h2 id="1-1-NAT服务器"><a href="#1-1-NAT服务器" class="headerlink" title="1.1 NAT服务器"></a>1.1 NAT服务器</h2><pre><code>- Ubuntu 18.04桌面版
 - 两张以太网卡</code></pre>
 <h2 id="1-2-软件"><a href="#1-2-软件" class="headerlink" title="1.2 软件"></a>1.2 软件</h2><pre><code>- tayga，实现NAT64功能
 安装命令：sudo apt install tayga
@@ -213,7 +213,7 @@
 
 - radvd，实现DHCPv6的分配服务
 安装命令：sudo apt install radvd</code></pre>
-<h1 id="二-隧道服务搭建"><a href="#二-隧道服务搭建" class="headerlink" title="二. 隧道服务搭建"></a>二. 隧道服务搭建</h1><p><img src="/images/2020/IPv6-only.png" alt="IPv6-only"></p>
+<h1 id="二-整体服务搭建"><a href="#二-整体服务搭建" class="headerlink" title="二. 整体服务搭建"></a>二. 整体服务搭建</h1><p><img src="/images/2020/IPv6-only.png" alt="IPv6-only"></p>
 <h2 id="2-1-基础信息"><a href="#2-1-基础信息" class="headerlink" title="2.1 基础信息"></a>2.1 基础信息</h2><ul>
 <li><p>Ubuntu服务器的2块网卡作用与地址信息如下：</p>
 <ul>
@@ -246,11 +246,11 @@
 <p>  修改tayga的配置文件<code>/etc/tayga.conf</code></p>
   <figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">tun-device nat64</span><br><span class="line">ipv4-addr 192.168.255.1</span><br><span class="line">prefix 2020:2020:2020::/96</span><br><span class="line">dynamic-pool 192.168.255.0/24</span><br><span class="line">data-dir /var/spool/tayga</span><br></pre></td></tr></table></figure>
 </li>
-<li><p>2.2.3 开启隧道服务器的IPv4与IPv6转发功能</p>
+<li><p>2.2.3 开启服务器的IPv4与IPv6转发功能</p>
 <p>  修改<code>/etc/sysctl.conf</code>文件中的两项参数</p>
   <figure class="highlight shell"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">net.ipv4.ip_forward=1</span><br><span class="line">net.ipv6.conf.all.forwarding=1</span><br></pre></td></tr></table></figure>
 
-<p>  之后重启Ubuntu隧道服务器，生效上述配置。</p>
+<p>  之后重启Ubuntu服务器，生效上述配置。</p>
 </li>
 <li><p>2.2.5 启动tayga虚拟网卡</p>
 <p>  执行命令设置tayga所用的nat64虚拟管道网卡的IPv4与IPv6地址</p>
@@ -293,7 +293,7 @@
 
 </li>
 </ul>
-<h1 id="三-内网访问环境搭建"><a href="#三-内网访问环境搭建" class="headerlink" title="三. 内网访问环境搭建"></a>三. 内网访问环境搭建</h1><p>在内网里各个终端有两种接入方式，使用上述搭建的IPv6隧道服务</p>
+<h1 id="三-内网访问环境搭建"><a href="#三-内网访问环境搭建" class="headerlink" title="三. 内网访问环境搭建"></a>三. 内网访问环境搭建</h1><p>在内网里各个终端有两种接入方式，使用上述搭建的IPv6服务</p>
 <ul>
 <li>间接使用WiFi路由器接入；</li>
 <li>直接使用有线接入；</li>
@@ -309,20 +309,20 @@
 <li>使用wireshark抓包可看到数据包均以IPv6地址进行传输。</li>
 </ul>
 <h2 id="3-2-直接使用有线接入"><a href="#3-2-直接使用有线接入" class="headerlink" title="3.2 直接使用有线接入"></a>3.2 直接使用有线接入</h2><h3 id="3-2-1-Windows-10客户端有线接入方式"><a href="#3-2-1-Windows-10客户端有线接入方式" class="headerlink" title="3.2.1 Windows 10客户端有线接入方式"></a>3.2.1 Windows 10客户端有线接入方式</h3><ul>
-<li>使用网线将Windows10客户端与隧道服务的内网网卡<code>enp4s0</code>相连。</li>
+<li>使用网线将Windows10客户端与NAT服务器的内网网卡<code>enp4s0</code>相连。</li>
 <li>关闭Windows10客户端的WiFi功能。</li>
 <li>点击 控制面板 –&gt; 网络和Internet –&gt; 更改网络设置项目下的 更改适配器选项，选择以太网图标，右键点击属性。</li>
 <li><code>不勾选</code> Internet协议版本4(TCP/IP4)。</li>
 <li><code>勾选</code> Internet协议版本6(TCP/IP6)。</li>
 <li>打开Windows10客户端的命令行窗口，输入<code>ipconfig</code>，结果显示以太网只有IPV6地址，且地址均为<code>1010:1010:1010</code>开头，则表示一切正常。</li>
-<li>至此，该Windows10客户端机可以正常以纯IPv6的方式，通过有线连接隧道Ubuntu服务器再访问互联网IPv4服务。</li>
+<li>至此，该Windows10客户端机可以正常以纯IPv6的方式，通过有线连接NAT服务器再访问互联网IPv4服务。</li>
 </ul>
 <h3 id="3-2-2-Ubuntu客户端有线接入方式"><a href="#3-2-2-Ubuntu客户端有线接入方式" class="headerlink" title="3.2.2 Ubuntu客户端有线接入方式"></a>3.2.2 Ubuntu客户端有线接入方式</h3><ul>
-<li>使用网线将Ubuntu客户端与隧道服务的内网网卡<code>enp4s0</code>相连。</li>
+<li>使用网线将Ubuntu客户端与NAT服务器的内网网卡<code>enp4s0</code>相连。</li>
 <li>关闭Ubuntu客户端的WiFi功能。</li>
 <li>关闭Ubuntu客户端的有线网卡IPv4功能。</li>
 <li>在命令行输入<code>ip a</code>，结果显示的以太网只有IPV6地址，且地址均为<code>1010:1010:1010</code>开头，则表示一切正常。</li>
-<li>至此，该Ubuntu客户端可以正常以纯IPv6的方式，通过有线连接隧道Ubuntu服务器再访问互联网IPv4服务。</li>
+<li>至此，该Ubuntu客户端可以正常以纯IPv6的方式，通过有线连接NAT服务器再访问互联网IPv4服务。</li>
 <li>验证：使用wireshark抓包可看到数据包均以IPv6地址进行传输。</li>
 </ul>
 <p><strong>参考资料</strong><br>[1] <a target="_blank" rel="noopener" href="https://blog.csdn.net/zdl244/article/details/106769174">https://blog.csdn.net/zdl244/article/details/106769174</a><br>[2] <a target="_blank" rel="noopener" href="http://www.routereflector.com/2014/02/connecting-an-ipv6-only-site-to-an-ipv4-only-world/">http://www.routereflector.com/2014/02/connecting-an-ipv6-only-site-to-an-ipv4-only-world/</a><br>[3] <a target="_blank" rel="noopener" href="https://blog.netpro.be/dhcpv6-configuration-isc-dhcp-server/">https://blog.netpro.be/dhcpv6-configuration-isc-dhcp-server/</a><br>[4] <a target="_blank" rel="noopener" href="https://www.tachyondynamics.com/2019/11/24/ipv6-only-your-network-cheap-and-easy/">https://www.tachyondynamics.com/2019/11/24/ipv6-only-your-network-cheap-and-easy/</a><br>[5] <a target="_blank" rel="noopener" href="http://koo.fi/blog/2013/03/20/linux-ipv6-router-radvd-dhcpv6/">http://koo.fi/blog/2013/03/20/linux-ipv6-router-radvd-dhcpv6/</a><br>[6] <a target="_blank" rel="noopener" href="https://www.cnblogs.com/chengliu/p/3636339.html">https://www.cnblogs.com/chengliu/p/3636339.html</a><br>[7] <a target="_blank" rel="noopener" href="https://www.cnblogs.com/read-the-spring-and-autumn-annals-in-night/p/3975796.html">https://www.cnblogs.com/read-the-spring-and-autumn-annals-in-night/p/3975796.html</a></p>
@@ -412,7 +412,7 @@
 
       <!--noindex-->
       <div class="post-toc-wrap sidebar-panel">
-          <div class="post-toc motion-element"><ol class="nav"><li class="nav-item nav-level-1"><a class="nav-link" href="#%E4%B8%80-%E7%B3%BB%E7%BB%9F%E7%8E%AF%E5%A2%83"><span class="nav-text">一. 系统环境</span></a><ol class="nav-child"><li class="nav-item nav-level-2"><a class="nav-link" href="#1-1-%E9%9A%A7%E9%81%93%E6%9C%8D%E5%8A%A1%E5%99%A8"><span class="nav-text">1.1 隧道服务器</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#1-2-%E8%BD%AF%E4%BB%B6"><span class="nav-text">1.2 软件</span></a></li></ol></li><li class="nav-item nav-level-1"><a class="nav-link" href="#%E4%BA%8C-%E9%9A%A7%E9%81%93%E6%9C%8D%E5%8A%A1%E6%90%AD%E5%BB%BA"><span class="nav-text">二. 隧道服务搭建</span></a><ol class="nav-child"><li class="nav-item nav-level-2"><a class="nav-link" href="#2-1-%E5%9F%BA%E7%A1%80%E4%BF%A1%E6%81%AF"><span class="nav-text">2.1 基础信息</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#2-2-Tayga%E7%9A%84NAT64%E6%9C%8D%E5%8A%A1%E6%90%AD%E5%BB%BA"><span class="nav-text">2.2 Tayga的NAT64服务搭建</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#2-3-DNS64%E6%9C%8D%E5%8A%A1%E6%90%AD%E5%BB%BA"><span class="nav-text">2.3 DNS64服务搭建</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#2-4-%E4%BD%BF%E7%94%A8radvd%E6%90%AD%E5%BB%BA%E5%86%85%E7%BD%91IPv6-DHCP%E6%9C%8D%E5%8A%A1"><span class="nav-text">2.4 使用radvd搭建内网IPv6 DHCP服务</span></a></li></ol></li><li class="nav-item nav-level-1"><a class="nav-link" href="#%E4%B8%89-%E5%86%85%E7%BD%91%E8%AE%BF%E9%97%AE%E7%8E%AF%E5%A2%83%E6%90%AD%E5%BB%BA"><span class="nav-text">三. 内网访问环境搭建</span></a><ol class="nav-child"><li class="nav-item nav-level-2"><a class="nav-link" href="#3-1-%E9%97%B4%E6%8E%A5%E4%BD%BF%E7%94%A8WIFI%E8%B7%AF%E7%94%B1%E5%99%A8%E6%8E%A5%E5%85%A5"><span class="nav-text">3.1 间接使用WIFI路由器接入</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#3-2-%E7%9B%B4%E6%8E%A5%E4%BD%BF%E7%94%A8%E6%9C%89%E7%BA%BF%E6%8E%A5%E5%85%A5"><span class="nav-text">3.2 直接使用有线接入</span></a><ol class="nav-child"><li class="nav-item nav-level-3"><a class="nav-link" href="#3-2-1-Windows-10%E5%AE%A2%E6%88%B7%E7%AB%AF%E6%9C%89%E7%BA%BF%E6%8E%A5%E5%85%A5%E6%96%B9%E5%BC%8F"><span class="nav-text">3.2.1 Windows 10客户端有线接入方式</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#3-2-2-Ubuntu%E5%AE%A2%E6%88%B7%E7%AB%AF%E6%9C%89%E7%BA%BF%E6%8E%A5%E5%85%A5%E6%96%B9%E5%BC%8F"><span class="nav-text">3.2.2 Ubuntu客户端有线接入方式</span></a></li></ol></li></ol></li></ol></div>
+          <div class="post-toc motion-element"><ol class="nav"><li class="nav-item nav-level-1"><a class="nav-link" href="#%E4%B8%80-%E7%B3%BB%E7%BB%9F%E7%8E%AF%E5%A2%83"><span class="nav-text">一. 系统环境</span></a><ol class="nav-child"><li class="nav-item nav-level-2"><a class="nav-link" href="#1-1-NAT%E6%9C%8D%E5%8A%A1%E5%99%A8"><span class="nav-text">1.1 NAT服务器</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#1-2-%E8%BD%AF%E4%BB%B6"><span class="nav-text">1.2 软件</span></a></li></ol></li><li class="nav-item nav-level-1"><a class="nav-link" href="#%E4%BA%8C-%E6%95%B4%E4%BD%93%E6%9C%8D%E5%8A%A1%E6%90%AD%E5%BB%BA"><span class="nav-text">二. 整体服务搭建</span></a><ol class="nav-child"><li class="nav-item nav-level-2"><a class="nav-link" href="#2-1-%E5%9F%BA%E7%A1%80%E4%BF%A1%E6%81%AF"><span class="nav-text">2.1 基础信息</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#2-2-Tayga%E7%9A%84NAT64%E6%9C%8D%E5%8A%A1%E6%90%AD%E5%BB%BA"><span class="nav-text">2.2 Tayga的NAT64服务搭建</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#2-3-DNS64%E6%9C%8D%E5%8A%A1%E6%90%AD%E5%BB%BA"><span class="nav-text">2.3 DNS64服务搭建</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#2-4-%E4%BD%BF%E7%94%A8radvd%E6%90%AD%E5%BB%BA%E5%86%85%E7%BD%91IPv6-DHCP%E6%9C%8D%E5%8A%A1"><span class="nav-text">2.4 使用radvd搭建内网IPv6 DHCP服务</span></a></li></ol></li><li class="nav-item nav-level-1"><a class="nav-link" href="#%E4%B8%89-%E5%86%85%E7%BD%91%E8%AE%BF%E9%97%AE%E7%8E%AF%E5%A2%83%E6%90%AD%E5%BB%BA"><span class="nav-text">三. 内网访问环境搭建</span></a><ol class="nav-child"><li class="nav-item nav-level-2"><a class="nav-link" href="#3-1-%E9%97%B4%E6%8E%A5%E4%BD%BF%E7%94%A8WIFI%E8%B7%AF%E7%94%B1%E5%99%A8%E6%8E%A5%E5%85%A5"><span class="nav-text">3.1 间接使用WIFI路由器接入</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#3-2-%E7%9B%B4%E6%8E%A5%E4%BD%BF%E7%94%A8%E6%9C%89%E7%BA%BF%E6%8E%A5%E5%85%A5"><span class="nav-text">3.2 直接使用有线接入</span></a><ol class="nav-child"><li class="nav-item nav-level-3"><a class="nav-link" href="#3-2-1-Windows-10%E5%AE%A2%E6%88%B7%E7%AB%AF%E6%9C%89%E7%BA%BF%E6%8E%A5%E5%85%A5%E6%96%B9%E5%BC%8F"><span class="nav-text">3.2.1 Windows 10客户端有线接入方式</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#3-2-2-Ubuntu%E5%AE%A2%E6%88%B7%E7%AB%AF%E6%9C%89%E7%BA%BF%E6%8E%A5%E5%85%A5%E6%96%B9%E5%BC%8F"><span class="nav-text">3.2.2 Ubuntu客户端有线接入方式</span></a></li></ol></li></ol></li></ol></div>
       </div>
       <!--/noindex-->
 
